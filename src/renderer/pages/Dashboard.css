@@ -1,0 +1,73 @@
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.dashboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-lg);
+}
+
+.dashboard-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-md);
+}
+
+.dashboard-title h1 {
+  font-size: var(--font-size-xxl);
+  font-weight: 700;
+}
+
+.project-count {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.dashboard-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.selection-count {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--spacing-lg);
+  animation: fadeIn var(--transition-normal);
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-xl) * 2;
+  color: var(--color-text-muted);
+  text-align: center;
+  gap: var(--spacing-md);
+}
+
+.empty-state svg {
+  opacity: 0.5;
+  margin-bottom: var(--spacing-md);
+}
+
+.empty-state h2 {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.empty-state p {
+  font-size: var(--font-size-sm);
+  margin-bottom: var(--spacing-md);
+}
