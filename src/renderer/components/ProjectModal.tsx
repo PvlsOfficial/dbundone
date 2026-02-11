@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import { X, Image, Music, FileAudio, Folder, Plus, Loader2, Sparkles } from "lucide-react"
 import { Project } from "@shared/types"
 import { cn } from "@/lib/utils"
+import { useImageUrl } from "@/hooks/useImageUrl"
 import {
   Button,
   Input,
@@ -41,6 +42,7 @@ const MUSICAL_KEY_MODES = [
 export const ProjectModal: React.FC<ProjectModalProps> = ({ project, isOpen, onClose, tags = [], onCreateTag }) => {
   const [title, setTitle] = useState("")
   const [artworkPath, setArtworkPath] = useState<string | null>(null)
+  const artworkUrl = useImageUrl(artworkPath)
   const [audioPreviewPath, setAudioPreviewPath] = useState<string | null>(null)
   const [dawProjectPath, setDawProjectPath] = useState<string | null>(null)
   const [dawType, setDawType] = useState<string | null>(null)
@@ -49,10 +51,17 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({ project, isOpen, onC
   const [musicalKeyMode, setMusicalKeyMode] = useState("Major")
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [collectionName, setCollectionName] = useState<string | null>(null)
+  const [genre, setGenre] = useState<string | null>(null)
+  const [artists, setArtists] = useState<string | null>(null)
   const [newTag, setNewTag] = useState("")
   const [newTagColor, setNewTagColor] = useState("#6366f1")
   const [isSaving, setIsSaving] = useState(false)
   const [imageError, setImageError] = useState(false)
+
+  // Reset error state when artwork URL changes
+  useEffect(() => {
+    if (artworkUrl) setImageError(false)
+  }, [artworkUrl])
 
   // Color presets for tag creation
   const colorPresets = [
@@ -95,6 +104,8 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({ project, isOpen, onC
       setMusicalKeyMode(mode)
       setSelectedTags(project.tags || [])
       setCollectionName(project.collectionName)
+      setGenre(project.genre || null)
+      setArtists(project.artists || null)
     } else {
       resetForm()
     }
@@ -112,6 +123,8 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({ project, isOpen, onC
     setMusicalKeyMode("Major")
     setSelectedTags([])
     setCollectionName(null)
+    setGenre(null)
+    setArtists(null)
     setNewTag("")
   }
 
@@ -178,6 +191,8 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({ project, isOpen, onC
         fileModifiedAt: null,
         archived: false,
         timeSpent: project?.timeSpent || null,
+        genre: genre?.trim() || null,
+        artists: artists?.trim() || null,
       }
 
       if (project) {
@@ -234,10 +249,10 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({ project, isOpen, onC
                 "group"
               )}
             >
-              {artworkPath && !imageError ? (
+              {artworkUrl && !imageError ? (
                 <>
                   <img
-                    src={`appfile://${artworkPath.replace(/\\/g, "/")}`}
+                    src={artworkUrl}
                     alt="Artwork"
                     className="w-full h-full object-cover"
                     onError={() => setImageError(true)}
@@ -304,6 +319,32 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({ project, isOpen, onC
                   className="bg-muted/30"
                 />
               </div>
+            </div>
+          </div>
+
+          {/* Genre and Artists Row */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm font-medium text-foreground mb-1.5 block">
+                Genre
+              </label>
+              <Input
+                value={genre || ""}
+                onChange={(e) => setGenre(e.target.value)}
+                placeholder="e.g., Hip Hop, Electronic"
+                className="bg-muted/30"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-foreground mb-1.5 block">
+                Artists
+              </label>
+              <Input
+                value={artists || ""}
+                onChange={(e) => setArtists(e.target.value)}
+                placeholder="e.g., Artist name"
+                className="bg-muted/30"
+              />
             </div>
           </div>
 

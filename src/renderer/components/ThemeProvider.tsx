@@ -122,7 +122,9 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({
       root.style.setProperty('--custom-card', isDark ? '222.2 84% 6.9%' : '0 0% 100%')
       root.style.setProperty('--custom-border', isDark ? '217.2 32.6% 17.5%' : '214.3 31.8% 91.4%')
     }
-    // For dark mode, we don't add any class - :root has the dark theme
+    if (resolvedTheme === 'dark') {
+      root.classList.add('dark')
+    }
 
     const hslColor = hexToHsl(settings.accentColor)
     root.style.setProperty('--accent-color', hslColor)

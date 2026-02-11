@@ -14,6 +14,11 @@ interface WaveformProps {
   className?: string
 }
 
+const NUM_WAVEFORM_PEAKS = 200
+
+// Module-level cache so peaks survive component remounts and version switches
+const peaksCache = new Map<string, number[]>()
+
 export const Waveform: React.FC<WaveformProps> = ({
   audioUrl,
   currentTime,
@@ -29,43 +34,71 @@ export const Waveform: React.FC<WaveformProps> = ({
   const [peaks, setPeaks] = useState<number[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const currentAudioUrl = useRef<string>('')
+  const requestIdRef = useRef(0)
 
-  // Fetch waveform peaks from main process
+  // Stable draw function ref to avoid re-creating on every render
+  const drawRef = useRef<() => void>()
+
+  // Load waveform peaks — check memory cache, then disk cache (instant), then compute
   useEffect(() => {
-    if (!audioUrl || audioUrl === currentAudioUrl.current) return
+    if (!audioUrl) return
 
-    let cancelled = false
-    currentAudioUrl.current = audioUrl
-    setIsLoading(true)
-    setError(null)
+    // 1. Memory cache — instant, no IPC
+    const cached = peaksCache.get(audioUrl)
+    if (cached) {
+      setPeaks(cached)
+      setIsLoading(false)
+      setError(null)
+      return
+    }
 
+    const thisRequest = ++requestIdRef.current
+
+    // 2. Try disk cache first (very fast IPC, no audio decode)
     const loadPeaks = async () => {
       try {
-        const numPeaks = 200 // Number of bars in waveform
-        const waveformPeaks = await window.electron.getWaveformPeaks(audioUrl, numPeaks)
-        
-        if (cancelled) return
-        
-        setPeaks(waveformPeaks)
-        setIsLoading(false)
+        // Fast path: disk cache lookup — typically < 1ms
+        const diskCached = await window.electron?.getCachedPeaks(audioUrl, NUM_WAVEFORM_PEAKS)
+        if (thisRequest !== requestIdRef.current) return
+
+        if (diskCached && diskCached.length > 0) {
+          peaksCache.set(audioUrl, diskCached)
+          setPeaks(diskCached)
+          setIsLoading(false)
+          setError(null)
+          return
+        }
+
+        // 3. Slow path: compute peaks (runs on background thread in Rust)
+        setIsLoading(true)
+        setError(null)
+        setPeaks([])
+
+        const computed = await window.electron?.computeAudioPeaks(audioUrl, NUM_WAVEFORM_PEAKS)
+        if (thisRequest !== requestIdRef.current) return
+
+        if (computed && computed.length > 0) {
+          peaksCache.set(audioUrl, computed)
+          setPeaks(computed)
+        } else {
+          setError('Could not compute waveform')
+        }
       } catch (err) {
-        if (cancelled) return
+        if (thisRequest !== requestIdRef.current) return
         console.error('Failed to load waveform:', err)
-        setError((err as Error).message)
-        setIsLoading(false)
+        setError('Waveform unavailable')
+      } finally {
+        if (thisRequest === requestIdRef.current) {
+          setIsLoading(false)
+        }
       }
     }
 
     loadPeaks()
-
-    return () => {
-      cancelled = true
-    }
   }, [audioUrl])
 
-  // Draw waveform on canvas
-  useEffect(() => {
+  // Draw waveform on canvas — update the ref so RAF can call it
+  drawRef.current = () => {
     const canvas = canvasRef.current
     const container = containerRef.current
     if (!canvas || !container || peaks.length === 0) return
@@ -73,17 +106,20 @@ export const Waveform: React.FC<WaveformProps> = ({
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    // Handle high DPI displays
     const dpr = window.devicePixelRatio || 1
     const rect = container.getBoundingClientRect()
-    
-    canvas.width = rect.width * dpr
-    canvas.height = rect.height * dpr
-    canvas.style.width = `${rect.width}px`
-    canvas.style.height = `${rect.height}px`
-    ctx.scale(dpr, dpr)
 
-    // Clear canvas
+    // Only resize canvas when dimensions actually change
+    const targetW = Math.round(rect.width * dpr)
+    const targetH = Math.round(rect.height * dpr)
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW
+      canvas.height = targetH
+      canvas.style.width = `${rect.width}px`
+      canvas.style.height = `${rect.height}px`
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    }
+
     ctx.clearRect(0, 0, rect.width, rect.height)
 
     const barWidth = rect.width / peaks.length
@@ -92,30 +128,42 @@ export const Waveform: React.FC<WaveformProps> = ({
     const centerY = rect.height / 2
     const progress = duration > 0 ? currentTime / duration : 0
 
-    // Draw waveform bars
-    peaks.forEach((peak, i) => {
-      const x = i * barWidth + barGap / 2
-      const barHeight = Math.max(2, peak * (rect.height * 0.9))
-      const halfBarHeight = barHeight / 2
-      
-      // Determine if this bar is in the "played" region
+    // Batch by color to minimize fillStyle switches
+    ctx.fillStyle = waveColor
+    for (let i = 0; i < peaks.length; i++) {
       const barProgress = (i + 0.5) / peaks.length
-      const isPlayed = barProgress <= progress
+      if (barProgress > progress) {
+        const x = i * barWidth + barGap / 2
+        const barHeight = Math.max(2, peaks[i] * (rect.height * 0.9))
+        ctx.fillRect(x, centerY - barHeight / 2, actualBarWidth, barHeight)
+      }
+    }
 
-      ctx.fillStyle = isPlayed ? progressColor : waveColor
-      
-      // Draw symmetrical bar (top half and bottom half)
-      ctx.fillRect(x, centerY - halfBarHeight, actualBarWidth, barHeight)
+    ctx.fillStyle = progressColor
+    for (let i = 0; i < peaks.length; i++) {
+      const barProgress = (i + 0.5) / peaks.length
+      if (barProgress <= progress) {
+        const x = i * barWidth + barGap / 2
+        const barHeight = Math.max(2, peaks[i] * (rect.height * 0.9))
+        ctx.fillRect(x, centerY - barHeight / 2, actualBarWidth, barHeight)
+      }
+    }
+  }
+
+  // Redraw via requestAnimationFrame, throttled to avoid redundant draws
+  const rafIdRef = useRef<number>(0)
+  useEffect(() => {
+    if (peaks.length === 0) return
+    cancelAnimationFrame(rafIdRef.current)
+    rafIdRef.current = requestAnimationFrame(() => {
+      drawRef.current?.()
     })
+    return () => cancelAnimationFrame(rafIdRef.current)
   }, [peaks, currentTime, duration, waveColor, progressColor])
 
   // Handle window resize
   useEffect(() => {
-    const handleResize = () => {
-      // Trigger re-render by forcing peaks update
-      setPeaks(p => [...p])
-    }
-
+    const handleResize = () => setPeaks(p => [...p])
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
@@ -129,7 +177,7 @@ export const Waveform: React.FC<WaveformProps> = ({
 
   if (error) {
     return (
-      <div 
+      <div
         onClick={handleClick}
         className={cn(
           "w-full cursor-pointer rounded-lg overflow-hidden relative flex items-center justify-center",
@@ -143,7 +191,7 @@ export const Waveform: React.FC<WaveformProps> = ({
   }
 
   return (
-    <div 
+    <div
       ref={containerRef}
       onClick={handleClick}
       className={cn(
@@ -153,12 +201,12 @@ export const Waveform: React.FC<WaveformProps> = ({
       style={{ height }}
     >
       {isLoading ? (
-        <div 
+        <div
           className="absolute inset-0 rounded-lg animate-pulse"
           style={{ backgroundColor: waveColor }}
         />
       ) : (
-        <canvas 
+        <canvas
           ref={canvasRef}
           className="absolute inset-0 w-full h-full"
         />

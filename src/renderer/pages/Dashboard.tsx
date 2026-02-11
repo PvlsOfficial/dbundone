@@ -1,10 +1,9 @@
-import React, { useState, useMemo, useCallback } from "react"
+import React, { useState, useMemo, useCallback, useRef, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import {
   Plus,
   Search,
   SlidersHorizontal,
-  Grid3X3,
   Grid2X2,
   List,
   CheckSquare,
@@ -14,8 +13,6 @@ import {
   FolderPlus,
   Folder,
   Shuffle,
-  RefreshCw,
-  Loader2,
   Lightbulb,
   Headphones,
   Disc3,
@@ -46,7 +43,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui"
-import { ProjectCard } from "../components/ProjectCard"
 import { VirtualizedProjectGrid } from "../components/VirtualizedProjectGrid"
 
 interface DashboardProps {
@@ -56,18 +52,29 @@ interface DashboardProps {
   playerState: AudioPlayerState
   settings: AppSettings
   onPlay: (project: Project) => Promise<void>
+  onStop: () => void
   onOpenDaw: (project: Project) => void
   onGenerateArtwork: (project: Project) => Promise<void>
   onChangeArtwork: (project: Project) => Promise<void>
   onRemoveArtwork: (project: Project) => Promise<void>
   onFetchUnsplashPhoto: (project: Project) => Promise<void>
   onFetchUnsplashPhotosForAll: () => Promise<void>
+  onCancelBatchPhotos: () => Promise<void>
+  photoProgress?: {
+    current: number;
+    total: number;
+    added: number;
+    file: string;
+    isRunning: boolean;
+    cancelled: boolean;
+  } | null
   onDelete: (project: Project) => Promise<void>
   onRefresh: () => void
   onOpenProject: (project: Project) => void
   onCreateGroup: (name: string, description?: string, projectIds?: string[]) => Promise<void>
   onUpdateGroup: (groupId: string, updates: Partial<ProjectGroup>) => void
   onSettingsChange: (settings: Partial<AppSettings>) => void
+  onOpenArtworkManager?: (project: Project) => void
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -77,18 +84,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
   playerState,
   settings,
   onPlay,
+  onStop,
   onOpenDaw,
   onGenerateArtwork,
   onChangeArtwork,
   onRemoveArtwork,
   onFetchUnsplashPhoto,
   onFetchUnsplashPhotosForAll,
+  onCancelBatchPhotos,
+  photoProgress,
   onDelete,
   onRefresh,
   onOpenProject,
   onCreateGroup,
   onUpdateGroup,
   onSettingsChange,
+  onOpenArtworkManager,
 }) => {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
@@ -99,6 +110,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
     collectionFilter: null,
     statusFilter: null,
     dawFilter: null,
+    genreFilter: null,
+    artistFilter: null,
   })
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set())
@@ -106,9 +119,25 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const gridSize = settings.gridSize || "medium"
   const [showFilters, setShowFilters] = useState(false)
   const [showGroupDropdown, setShowGroupDropdown] = useState(false)
-  const [isRescanning, setIsRescanning] = useState(false)
-
+  const [searchInput, setSearchInput] = useState("")
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const { addToast } = useToast()
+
+  // Debounced search: update actual filter after 200ms of idle typing
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
+    debounceTimerRef.current = setTimeout(() => {
+      setFilters(prev => ({ ...prev, searchQuery: value }))
+    }, 200)
+  }, [])
+
+  // Cleanup debounce timer
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
+    }
+  }, [])
 
   // Update viewMode and persist to settings
   const setViewMode = (mode: "grid" | "list") => {
@@ -133,6 +162,24 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const availableDaws = useMemo(() => {
     return settings.selectedDAWs
   }, [settings.selectedDAWs])
+
+  // Get all unique genres from projects
+  const availableGenres = useMemo(() => {
+    const genreSet = new Set<string>()
+    projects.forEach((project) => {
+      if (project.genre) genreSet.add(project.genre)
+    })
+    return Array.from(genreSet).sort()
+  }, [projects])
+
+  // Get all unique artists from projects
+  const availableArtists = useMemo(() => {
+    const artistSet = new Set<string>()
+    projects.forEach((project) => {
+      if (project.artists) artistSet.add(project.artists)
+    })
+    return Array.from(artistSet).sort()
+  }, [projects])
 
   // Filter and sort projects - Highly optimized version
   const filteredProjects = useMemo(() => {
@@ -178,6 +225,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
       const dawSet = new Set(filters.dawFilter)
       result = result.filter((project) =>
         project.dawType && dawSet.has(project.dawType)
+      )
+    }
+
+    // Genre filter
+    if (filters.genreFilter && filters.genreFilter.length > 0) {
+      const genreSet = new Set(filters.genreFilter)
+      result = result.filter((project) =>
+        project.genre && genreSet.has(project.genre)
+      )
+    }
+
+    // Artist filter
+    if (filters.artistFilter && filters.artistFilter.length > 0) {
+      const artistSet = new Set(filters.artistFilter)
+      result = result.filter((project) =>
+        project.artists && artistSet.has(project.artists)
       )
     }
 
@@ -273,6 +336,32 @@ export const Dashboard: React.FC<DashboardProps> = ({
       return {
         ...prev,
         dawFilter: newDaws.length > 0 ? newDaws : null
+      }
+    })
+  }, [])
+
+  const handleGenreToggle = useCallback((genre: string) => {
+    setFilters(prev => {
+      const current = prev.genreFilter || []
+      const updated = current.includes(genre)
+        ? current.filter(g => g !== genre)
+        : [...current, genre]
+      return {
+        ...prev,
+        genreFilter: updated.length > 0 ? updated : null
+      }
+    })
+  }, [])
+
+  const handleArtistToggle = useCallback((artist: string) => {
+    setFilters(prev => {
+      const current = prev.artistFilter || []
+      const updated = current.includes(artist)
+        ? current.filter(a => a !== artist)
+        : [...current, artist]
+      return {
+        ...prev,
+        artistFilter: updated.length > 0 ? updated : null
       }
     })
   }, [])
@@ -392,15 +481,29 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   </Button>
                 </motion.div>
               )}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onFetchUnsplashPhotosForAll}
-                className="gap-2"
-              >
-                <Shuffle className="w-4 h-4" />
-                Add Photos to All
-              </Button>
+              {settings.unsplashEnabled && (
+                photoProgress?.isRunning ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onCancelBatchPhotos}
+                    className="gap-2 border-orange-500/50 text-orange-400 hover:bg-orange-500/10"
+                  >
+                    <X className="w-4 h-4" />
+                    Stop ({photoProgress.added}/{photoProgress.total})
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onFetchUnsplashPhotosForAll}
+                    className="gap-2"
+                  >
+                    <Shuffle className="w-4 h-4" />
+                    Add Photos to All
+                  </Button>
+                )
+              )}
               <Button
                 variant={selectionMode ? "secondary" : "ghost"}
                 size="sm"
@@ -408,53 +511,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
               >
                 <CheckSquare className="w-4 h-4 mr-2" />
                 {selectionMode ? "Done" : "Select"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={isRescanning}
-                onClick={async () => {
-                  setIsRescanning(true)
-                  try {
-                    const result = await (window as any).electron?.invoke('scan:rescan-flp-metadata')
-                    if (result && result.error) {
-                      addToast({
-                        title: "Scan Failed",
-                        description: result.error,
-                        variant: "destructive",
-                      })
-                    } else if (result && result.count > 0) {
-                      addToast({
-                        title: "Metadata Updated",
-                        description: `Updated metadata for ${result.count} FLP projects${result.errors > 0 ? ` (${result.errors} errors)` : ''}`,
-                        variant: "default",
-                      })
-                      onRefresh()
-                    } else {
-                      addToast({
-                        title: "No Updates",
-                        description: "No FLP projects needed metadata updates",
-                        variant: "default",
-                      })
-                    }
-                  } catch (error: any) {
-                    addToast({
-                      title: "Scan Failed",
-                      description: error?.message || "Failed to rescan FLP metadata",
-                      variant: "destructive",
-                    })
-                  } finally {
-                    setIsRescanning(false)
-                  }
-                }}
-                className="gap-2"
-              >
-                {isRescanning ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="w-4 h-4" />
-                )}
-                {isRescanning ? 'Scanning...' : 'Rescan FLP Metadata'}
               </Button>
               <Button onClick={handleNewProject} className="gap-2">
                 <Plus className="w-4 h-4" />
@@ -469,15 +525,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
                 placeholder="Search projects..."
-                value={filters.searchQuery}
-                onChange={(e) =>
-                  setFilters({ ...filters, searchQuery: e.target.value })
-                }
+                value={searchInput}
+                onChange={(e) => handleSearchChange(e.target.value)}
                 className="pl-9 bg-muted/30"
               />
-              {filters.searchQuery && (
+              {searchInput && (
                 <button
-                  onClick={() => setFilters({ ...filters, searchQuery: "" })}
+                  onClick={() => {
+                    setSearchInput("")
+                    setFilters(prev => ({ ...prev, searchQuery: "" }))
+                    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
+                  }}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   aria-label="Clear search"
                 >
@@ -525,28 +583,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
-                    onClick={() => onSettingsChange({ viewMode: "grid", gridSize: "small" })}
-                    aria-label="Grid view (3x3)"
-                    className={cn(
-                      "p-1.5 rounded-md transition-colors",
-                      viewMode === "grid" && gridSize === "small"
-                        ? "bg-primary text-primary-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    <Grid3X3 className="w-4 h-4" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>Grid View (3x3)</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
                     onClick={() => onSettingsChange({ viewMode: "grid", gridSize: "medium" })}
-                    aria-label="Grid view (2x2)"
+                    aria-label="Grid view"
                     className={cn(
                       "p-1.5 rounded-md transition-colors",
-                      viewMode === "grid" && gridSize === "medium"
+                      viewMode === "grid"
                         ? "bg-primary text-primary-foreground shadow-sm"
                         : "text-muted-foreground hover:text-foreground"
                     )}
@@ -554,7 +595,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <Grid2X2 className="w-4 h-4" />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent>Grid View (2x2)</TooltipContent>
+                <TooltipContent>Grid View</TooltipContent>
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -591,12 +632,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <label className="text-sm font-medium text-foreground">Status</label>
                     <div className="flex flex-wrap gap-2">
                       {[
-                        { id: "idea", title: "Idea", icon: <Lightbulb className="w-3.5 h-3.5" />, color: "text-purple-400", bgColor: "bg-purple-500/10" },
-                        { id: "in-progress", title: "In Progress", icon: <Music className="w-3.5 h-3.5" />, color: "text-blue-400", bgColor: "bg-blue-500/10" },
-                        { id: "mixing", title: "Mixing", icon: <Headphones className="w-3.5 h-3.5" />, color: "text-orange-400", bgColor: "bg-orange-500/10" },
-                        { id: "mastering", title: "Mastering", icon: <Disc3 className="w-3.5 h-3.5" />, color: "text-cyan-400", bgColor: "bg-cyan-500/10" },
-                        { id: "completed", title: "Completed", icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: "text-green-400", bgColor: "bg-green-500/10" },
-                        { id: "released", title: "Released", icon: <PartyPopper className="w-3.5 h-3.5" />, color: "text-pink-400", bgColor: "bg-pink-500/10" },
+                        { id: "idea", title: "Idea", icon: <Lightbulb className="w-3.5 h-3.5" />, color: "text-purple-600 dark:text-purple-400", bgColor: "bg-purple-500/15 dark:bg-purple-500/10" },
+                        { id: "in-progress", title: "In Progress", icon: <Music className="w-3.5 h-3.5" />, color: "text-blue-600 dark:text-blue-400", bgColor: "bg-blue-500/15 dark:bg-blue-500/10" },
+                        { id: "mixing", title: "Mixing", icon: <Headphones className="w-3.5 h-3.5" />, color: "text-orange-600 dark:text-orange-400", bgColor: "bg-orange-500/15 dark:bg-orange-500/10" },
+                        { id: "mastering", title: "Mastering", icon: <Disc3 className="w-3.5 h-3.5" />, color: "text-cyan-600 dark:text-cyan-400", bgColor: "bg-cyan-500/15 dark:bg-cyan-500/10" },
+                        { id: "completed", title: "Completed", icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: "text-green-600 dark:text-green-400", bgColor: "bg-green-500/15 dark:bg-green-500/10" },
+                        { id: "released", title: "Released", icon: <PartyPopper className="w-3.5 h-3.5" />, color: "text-pink-600 dark:text-pink-400", bgColor: "bg-pink-500/15 dark:bg-pink-500/10" },
                       ].map((status) => (
                         <button
                           key={status.id}
@@ -669,15 +710,63 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     </div>
                   )}
 
+                  {/* Genre Filter */}
+                  {availableGenres.length > 0 && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-foreground">Genre</label>
+                      <div className="flex flex-wrap gap-2">
+                        {availableGenres.map((genre) => (
+                          <button
+                            key={genre}
+                            onClick={() => handleGenreToggle(genre)}
+                            className={cn(
+                              "px-3 py-1.5 rounded-full text-sm font-medium transition-all",
+                              filters.genreFilter?.includes(genre)
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                            )}
+                          >
+                            {genre}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Artist Filter */}
+                  {availableArtists.length > 0 && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-foreground">Artist</label>
+                      <div className="flex flex-wrap gap-2">
+                        {availableArtists.map((artist) => (
+                          <button
+                            key={artist}
+                            onClick={() => handleArtistToggle(artist)}
+                            className={cn(
+                              "px-3 py-1.5 rounded-full text-sm font-medium transition-all",
+                              filters.artistFilter?.includes(artist)
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                            )}
+                          >
+                            {artist}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Clear All Filters */}
-                  {(filters.selectedTags.length > 0 || filters.statusFilter?.length || filters.dawFilter?.length) && (
+                  {(filters.selectedTags.length > 0 || filters.statusFilter?.length || filters.dawFilter?.length || filters.genreFilter?.length || filters.artistFilter?.length) && (
                     <div className="pt-2">
                       <button
                         onClick={() => setFilters({
                           ...filters,
                           selectedTags: [],
                           statusFilter: null,
-                          dawFilter: null
+                          dawFilter: null,
+                          genreFilter: null,
+                          artistFilter: null,
                         })}
                         className="px-3 py-1.5 rounded-full text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors"
                       >
@@ -706,12 +795,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 onProjectSelect={handleProjectSelect}
                 onProjectClick={handleEditProject}
                 onPlay={onPlay}
+                onStop={onStop}
                 onOpenDaw={onOpenDaw}
                 onGenerateArtwork={onGenerateArtwork}
                 onChangeArtwork={onChangeArtwork}
                 onRemoveArtwork={onRemoveArtwork}
                 onFetchUnsplashPhoto={onFetchUnsplashPhoto}
                 onDelete={onDelete}
+                unsplashEnabled={settings.unsplashEnabled}
+                aiArtworkEnabled={settings.autoGenerateArtwork}
+                onOpenArtworkManager={onOpenArtworkManager}
               />
             ) : (
               <motion.div

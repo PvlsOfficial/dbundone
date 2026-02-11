@@ -66,3 +66,13 @@ Desktop.ini
 
 # Optional eslint cache
 .eslintcache
+
+# Python (no longer used)
+.venv/
+assets/python/
+*.py
+__pycache__/
+*.pyc
+
+# Tauri build artifacts
+src-tauri/target/

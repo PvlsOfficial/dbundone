@@ -6,11 +6,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiApiUrl: null,
   aiProvider: "local",
   theme: "dark",
-  customThemeColor: "#1a1a2e",
   accentColor: "#6366f1",
   autoGenerateArtwork: false,
   excludeAutosaves: true,
   selectedDAWs: ["FL Studio", "Ableton Live"],
   dawFolders: {},
   viewMode: "grid",
+  gridSize: "medium",
+  unsplashEnabled: true,
 }

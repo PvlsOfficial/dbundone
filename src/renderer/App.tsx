@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react"
+import React, { useState, useEffect, useCallback, useRef } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Loader2 } from "lucide-react"
 import { TitleBar } from "./components/TitleBar"
@@ -10,12 +10,14 @@ import { Scheduler } from "./pages/Scheduler"
 import { Settings } from "./pages/Settings"
 import { Statistics } from "./pages/Statistics"
 import { ProjectDetail } from "./pages/ProjectDetail"
+import { ArtworkManager } from "./components/ArtworkManager"
 import { AudioPlayer } from "./components/AudioPlayer"
 import { ToastProvider, useToast } from "./components/ui/toast"
 import { ThemeProvider } from "./components/ThemeProvider"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { Project, ProjectGroup, Task, Tag, AudioPlayerState, AppSettings } from "@shared/types"
 import { DEFAULT_SETTINGS } from "@/lib/constants"
+import { invalidateImageCache } from "@/lib/utils"
 
 // Check if running in Electron - must be a function to check at runtime after preload
 const isElectron = () => typeof window !== 'undefined' && typeof window.electron !== 'undefined'
@@ -39,13 +41,25 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     duration: 0,
     volume: 0.8,
   })
+  const savedPlayerStateRef = useRef<AudioPlayerState | null>(null)
   const [scanProgress, setScanProgress] = useState<{
     current: number;
     total: number;
     daw: string;
     file: string;
     isScanning: boolean;
+    phase?: string;
   } | null>(null)
+  const [photoProgress, setPhotoProgress] = useState<{
+    current: number;
+    total: number;
+    added: number;
+    file: string;
+    isRunning: boolean;
+    cancelled: boolean;
+  } | null>(null)
+
+  const [artworkManagerProject, setArtworkManagerProject] = useState<Project | null>(null)
 
   const { addToast } = useToast()
 
@@ -114,7 +128,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     }
     loadData()
 
-    // Set up IPC listener for scan progress
+    // Set up IPC listeners for scan progress and photo progress
     if (isElectron() && window.electron) {
       const handleScanProgress = (_: any, progress: any) => {
         setScanProgress({
@@ -122,16 +136,38 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
           total: progress.total,
           daw: progress.daw,
           file: progress.file,
-          isScanning: progress.isScanning !== undefined ? progress.isScanning : true
+          isScanning: progress.isScanning !== undefined ? progress.isScanning : true,
+          phase: progress.phase,
         })
       }
 
       // Listen for scan progress updates
       window.electron.ipcRenderer.on('scan:progress', handleScanProgress)
 
-      // Cleanup listener on unmount
+      // Listen for photo progress updates (Tauri event)
+      let unlistenPhoto: (() => void) | null = null
+      {
+        import("@tauri-apps/api/event").then(({ listen }) => {
+          listen("photo-progress", (event: any) => {
+            const p = event.payload
+            setPhotoProgress({
+              current: p.current,
+              total: p.total,
+              added: p.added,
+              file: p.file,
+              isRunning: p.isRunning,
+              cancelled: p.cancelled,
+            })
+          }).then((unlisten) => {
+            unlistenPhoto = unlisten
+          })
+        })
+      }
+
+      // Cleanup listeners on unmount
       return () => {
         window.electron?.ipcRenderer.removeListener('scan:progress', handleScanProgress)
+        unlistenPhoto?.()
       }
     }
   }, [refreshData])
@@ -206,11 +242,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
 
       // Scan all selected DAW folders (only those with configured paths)
       for (const daw of settings.selectedDAWs) {
-        // Get folder path - check both new dawFolders and legacy flStudioPath
-        let folderPath = settings.dawFolders[daw]
-        if (!folderPath && daw === "FL Studio") {
-          folderPath = settings.flStudioPath
-        }
+        const folderPath = settings.dawFolders[daw]
 
         // Skip DAWs without configured folders (don't show error)
         if (!folderPath) {
@@ -265,7 +297,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
       // Reset scan progress
       setScanProgress(null)
     }
-  }, [addToast, refreshData, settings.selectedDAWs, settings.dawFolders])
+  }, [addToast, refreshData, settings.selectedDAWs, settings.dawFolders, settings.flStudioPath])
 
   const handleScanFolderWithSelection = useCallback(async () => {
     if (!isElectron()) {
@@ -284,63 +316,63 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
       const folderPath = await window.electron?.selectFolder() || null
       if (!folderPath) return
 
-      // Determine which DAW this folder is for by checking file extensions
-      let detectedDAW: string | null = null
+      // Determine which DAW(s) this folder is for by checking file extensions
+      let hasFLP = false
+      let hasALS = false
       try {
         const detection = await window.electron?.detectProjects(folderPath) || { hasFLP: false, hasALS: false }
-        const { hasFLP, hasALS } = detection
-
-        if (hasFLP) detectedDAW = "FL Studio"
-        else if (hasALS) detectedDAW = "Ableton Live"
+        hasFLP = detection.hasFLP
+        hasALS = detection.hasALS
       } catch (error) {
         // If we can't read the folder, default to FL Studio for backward compatibility
-        detectedDAW = "FL Studio"
+        hasFLP = true
       }
 
-      if (!detectedDAW) {
+      if (!hasFLP && !hasALS) {
         addToast({
           title: "No project files detected",
-          description: "The selected folder doesn't contain FL Studio (.flp) or Ableton (.als) files",
+          description: "The selected folder doesn't contain FL Studio (.flp/.zip) or Ableton (.als) files",
           variant: "destructive",
         })
         return
       }
 
-      // Update settings with the selected folder for the detected DAW
-      if (detectedDAW === "FL Studio") {
-        await onSettingsChange({ flStudioPath: folderPath })
-      } else {
-        await onSettingsChange({
-          dawFolders: {
-            ...settings.dawFolders,
-            [detectedDAW]: folderPath
-          }
-        })
-      }
+      // Update settings with the selected folder for detected DAW(s)
+      const updatedDawFolders = { ...settings.dawFolders }
+      if (hasFLP) updatedDawFolders["FL Studio"] = folderPath
+      if (hasALS) updatedDawFolders["Ableton Live"] = folderPath
+      await onSettingsChange({ dawFolders: updatedDawFolders })
+
+      const detectedNames: string[] = []
+      if (hasFLP) detectedNames.push("FL Studio")
+      if (hasALS) detectedNames.push("Ableton Live")
 
       addToast({
         title: "Scanning folder...",
-        description: `Looking for ${detectedDAW} projects`,
+        description: `Looking for ${detectedNames.join(" & ")} projects`,
       })
 
-      let result
-      if (detectedDAW === "FL Studio") {
-        result = await window.electron?.scanFLStudioFolder(folderPath)
-      } else if (detectedDAW === "Ableton Live") {
-        result = await window.electron?.scanAbletonFolder(folderPath)
+      let totalCount = 0
+      if (hasFLP) {
+        const result = await window.electron?.scanFLStudioFolder(folderPath)
+        if (result?.count) totalCount += result.count
+      }
+      if (hasALS) {
+        const result = await window.electron?.scanAbletonFolder(folderPath)
+        if (result?.count) totalCount += result.count
       }
 
-      if (result && result.count > 0) {
+      if (totalCount > 0) {
         await refreshData()
         addToast({
           title: "Scan complete",
-          description: `Added ${result.count} ${detectedDAW} projects`,
+          description: `Added ${totalCount} projects from ${detectedNames.join(" & ")}`,
           variant: "success",
         })
       } else {
         addToast({
           title: "Project list is up to date",
-          description: `No new ${detectedDAW} projects found in this folder`,
+          description: `No new projects found in this folder`,
         })
       }
     } catch (error) {
@@ -364,8 +396,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
 
       const artworkPath = await window.electron?.generateArtwork(project.id, project.title)
       if (artworkPath) {
-        // Wait a bit for the image to be fully loaded
-        await new Promise(resolve => setTimeout(resolve, 500))
+        invalidateImageCache(artworkPath)
         await refreshData()
         addToast({
           title: "Artwork generated",
@@ -394,8 +425,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
 
         const artworkPath = await window.electron?.fetchUnsplashPhoto(project.id)
         if (artworkPath) {
-          // Wait a bit for the image to be fully loaded
-          await new Promise(resolve => setTimeout(resolve, 300))
+          invalidateImageCache(artworkPath)
           await refreshData()
           addToast({
             title: "Photo fetched!",
@@ -434,7 +464,6 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     }
 
     try {
-      // Find projects that don't have artwork
       const projectsWithoutArtwork = projects.filter(project => !project.artworkPath)
 
       if (projectsWithoutArtwork.length === 0) {
@@ -445,102 +474,82 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
         return
       }
 
-      let successCount = 0
-      let totalRetries = 0
-      const maxRetriesPerProject = 8 // Increased to 8 attempts per project
-      const totalProjects = projectsWithoutArtwork.length
+      setPhotoProgress({ current: 0, total: projectsWithoutArtwork.length, added: 0, file: "Starting...", isRunning: true, cancelled: false })
 
-      // Initial progress toast
-      addToast({
-        title: "Fetching photos...",
-        description: `Starting to get random Unsplash photos for ${totalProjects} projects (0/${totalProjects})`,
-      })
+      const result = await window.electron?.batchFetchPhotos()
 
-      // Process projects one by one with retry logic and live updates
-      for (let i = 0; i < projectsWithoutArtwork.length; i++) {
-        const project = projectsWithoutArtwork[i]
-        let projectSuccess = false
-        let projectRetries = 0
+      invalidateImageCache()
+      await refreshData()
+      setPhotoProgress(null)
 
-        while (!projectSuccess && projectRetries < maxRetriesPerProject) {
-          try {
-            const artworkPath = await window.electron?.fetchUnsplashPhoto(project.id)
-            if (artworkPath) {
-              projectSuccess = true
-              successCount++
-
-              // Immediately refresh data so the photo appears in real-time
-              await refreshData()
-
-              // Update progress toast
-              addToast({
-                title: "Fetching photos...",
-                description: `Successfully added artwork to "${project.title}" (${successCount}/${totalProjects})${totalRetries > 0 ? ` • ${totalRetries} retries used` : ''}`,
-                variant: "success",
-              })
-            } else {
-              projectRetries++
-              totalRetries++
-            }
-            // Small delay between requests
-            await new Promise(resolve => setTimeout(resolve, 300))
-          } catch (error) {
-            projectRetries++
-            totalRetries++
-            console.error(`Failed to fetch photo for project ${project.title} (attempt ${projectRetries}):`, error)
-
-            // Show retry progress for failed attempts (less frequent)
-            if (projectRetries < maxRetriesPerProject && projectRetries % 3 === 0) {
-              addToast({
-                title: "Retrying...",
-                description: `Attempt ${projectRetries + 1}/${maxRetriesPerProject} for "${project.title}" (${successCount}/${totalProjects})`,
-              })
-            }
-
-            // Small delay before retry
-            await new Promise(resolve => setTimeout(resolve, 800))
-          }
-        }
-
-        if (!projectSuccess) {
-          console.error(`Failed to fetch photo for project ${project.title} after ${maxRetriesPerProject} attempts`)
-          // Show failure for this specific project
+      if (result) {
+        if (result.cancelled) {
           addToast({
-            title: "Photo fetch failed",
-            description: `Could not find suitable artwork for "${project.title}" after ${maxRetriesPerProject} attempts`,
+            title: "Photo fetch stopped",
+            description: `Added ${result.added} of ${result.total} photos before stopping`,
+            variant: "success",
+          })
+        } else if (result.added > 0) {
+          addToast({
+            title: "Photos added",
+            description: `Added artwork to ${result.added} of ${result.total} projects`,
+            variant: "success",
+          })
+        } else {
+          addToast({
+            title: "No photos added",
+            description: "Could not fetch photos. Check your internet connection.",
             variant: "destructive",
           })
         }
       }
-
-      // Final summary toast
-      if (successCount > 0) {
-        addToast({
-          title: "Bulk photo fetch complete!",
-          description: `Successfully added artwork to ${successCount}/${totalProjects} projects${totalRetries > 0 ? ` (${totalRetries} total retries used)` : ''}`,
-          variant: "success",
-        })
-      } else {
-        addToast({
-          title: "Bulk fetch failed",
-          description: "Could not fetch photos for any projects. Please check your internet connection.",
-          variant: "destructive",
-        })
-      }
     } catch (error) {
+      setPhotoProgress(null)
       addToast({
         title: "Bulk fetch failed",
-        description: "Could not complete the bulk photo fetching operation",
+        description: "Could not complete the photo fetching operation",
         variant: "destructive",
       })
     }
   }, [addToast, refreshData, projects])
+
+  const handleCancelBatchPhotos = useCallback(async () => {
+    try {
+      await window.electron?.cancelBatchPhotos()
+    } catch (error) {
+      console.error("Failed to cancel batch photos:", error)
+    }
+  }, [])
+
+  const handleRemoveAllArtwork = useCallback(async () => {
+    if (!isElectron()) return
+    try {
+      const result = await window.electron?.removeAllArtwork()
+      invalidateImageCache()
+      await refreshData()
+      if (result) {
+        addToast({
+          title: "All artwork removed",
+          description: `Cleared ${result.cleared} projects, deleted ${result.filesDeleted} files`,
+          variant: "success",
+        })
+      }
+    } catch (error) {
+      addToast({
+        title: "Failed to remove artwork",
+        description: "Could not remove all artwork",
+        variant: "destructive",
+      })
+    }
+  }, [addToast, refreshData])
 
   const handleChangeArtwork = useCallback(async (project: Project) => {
     try {
       const imagePath = await window.electron?.selectImage()
       if (imagePath) {
         await window.electron?.updateProject(project.id, { artworkPath: imagePath })
+        await window.electron?.addArtworkHistoryEntry(project.id, imagePath, "file")
+        invalidateImageCache()
         await refreshData()
         addToast({
           title: "Artwork changed",
@@ -560,6 +569,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
   const handleRemoveArtwork = useCallback(async (project: Project) => {
     try {
       await window.electron?.updateProject(project.id, { artworkPath: null })
+      if (project.artworkPath) invalidateImageCache(project.artworkPath)
       await refreshData()
       addToast({
         title: "Artwork removed",
@@ -574,6 +584,12 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
       })
     }
   }, [addToast, refreshData])
+
+  const handleOpenArtworkManager = useCallback((project: Project) => {
+    // Get the latest version of the project from state
+    const latest = projects.find(p => p.id === project.id) || project
+    setArtworkManagerProject(latest)
+  }, [projects])
 
   const handleDeleteProject = useCallback(async (project: Project) => {
     try {
@@ -599,13 +615,33 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     } else {
       setSelectedProject(project)
     }
+
+    // Save and hide the audio player when entering project detail
+    if (playerState.currentTrack) {
+      savedPlayerStateRef.current = { ...playerState }
+      setPlayerState({
+        isPlaying: false,
+        currentTrack: null,
+        currentTime: playerState.currentTime,
+        duration: playerState.duration,
+        volume: playerState.volume,
+      })
+    }
+
     // Remember where we came from
     setPreviousPage(currentPage as Page)
     setCurrentPage("project-detail")
-  }, [projects, currentPage])
+  }, [projects, currentPage, playerState])
 
   const handleBackFromProject = useCallback(() => {
     setSelectedProject(null)
+
+    // Restore the audio player if it was playing before
+    if (savedPlayerStateRef.current) {
+      setPlayerState(savedPlayerStateRef.current)
+      savedPlayerStateRef.current = null
+    }
+
     // Go back to where we came from (dashboard, groups, or group-detail)
     setCurrentPage(previousPage === "project-detail" ? "dashboard" : previousPage)
   }, [previousPage])
@@ -617,6 +653,71 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
       description: "All projects have been removed",
       variant: "success",
     })
+  }, [addToast, refreshData])
+
+  const handleRescan = useCallback(async () => {
+    await handleScanFolder()
+  }, [handleScanFolder])
+
+  const handleRefreshMetadata = useCallback(async () => {
+    try {
+      // Re-scan triggers a full metadata re-extract for all known projects
+      let totalScanned = 0
+      const scannedDAWs: string[] = []
+
+      for (const daw of settings.selectedDAWs) {
+        const folderPath = settings.dawFolders[daw]
+        if (!folderPath) continue
+
+        let result
+        if (daw === "FL Studio") {
+          result = await window.electron?.scanFLStudioFolder(folderPath)
+        } else if (daw === "Ableton Live") {
+          result = await window.electron?.scanAbletonFolder(folderPath)
+        }
+
+        if (result && result.count > 0) {
+          totalScanned += result.count
+          scannedDAWs.push(daw)
+        }
+      }
+
+      await refreshData()
+      addToast({
+        title: "Metadata refreshed",
+        description: totalScanned > 0
+          ? `Updated ${totalScanned} projects`
+          : "All project metadata is up to date",
+        variant: "success",
+      })
+    } catch (error) {
+      addToast({
+        title: "Refresh failed",
+        description: "Could not refresh project metadata",
+        variant: "destructive",
+      })
+    }
+  }, [addToast, refreshData, settings.selectedDAWs, settings.dawFolders])
+
+  const handleSyncFileDates = useCallback(async () => {
+    try {
+      const result = await window.electron?.updateFileModDates()
+      const count = result?.count ?? 0
+      await refreshData()
+      addToast({
+        title: "File dates synced",
+        description: count > 0
+          ? `Updated dates for ${count} projects`
+          : "All file dates are already up to date",
+        variant: "success",
+      })
+    } catch (error) {
+      addToast({
+        title: "Sync failed",
+        description: "Could not update file modification dates",
+        variant: "destructive",
+      })
+    }
   }, [addToast, refreshData])
 
   const handleSettingsChange = useCallback(async (newSettings: Partial<AppSettings>) => {
@@ -684,18 +785,22 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             playerState={playerState}
             settings={settings}
             onPlay={playProject}
+            onStop={() => setPlayerState(prev => ({ ...prev, isPlaying: false }))}
             onOpenDaw={handleOpenDaw}
             onGenerateArtwork={handleGenerateArtwork}
             onChangeArtwork={handleChangeArtwork}
             onRemoveArtwork={handleRemoveArtwork}
             onFetchUnsplashPhoto={handleFetchUnsplashPhoto}
             onFetchUnsplashPhotosForAll={handleFetchUnsplashPhotosForAll}
+            onCancelBatchPhotos={handleCancelBatchPhotos}
+            photoProgress={photoProgress}
             onDelete={handleDeleteProject}
             onRefresh={refreshData}
             onOpenProject={handleOpenProject}
             onCreateGroup={handleCreateGroup}
             onUpdateGroup={handleUpdateGroup}
             onSettingsChange={onSettingsChange}
+            onOpenArtworkManager={handleOpenArtworkManager}
           />
         )
       case "project-detail":
@@ -715,6 +820,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             setPlayerState={setPlayerState}
             tags={tags}
             onCreateTag={handleCreateTag}
+            onOpenArtworkManager={handleOpenArtworkManager}
           />
         )
       case "groups":
@@ -755,6 +861,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             onFetchUnsplashPhoto={handleFetchUnsplashPhoto}
             onDeleteProject={handleDeleteProject}
             onSettingsChange={onSettingsChange}
+            onOpenArtworkManager={handleOpenArtworkManager}
           />
         )
       case "scheduler":
@@ -764,8 +871,12 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
       case "settings":
         return <Settings
           onDatabaseCleared={handleDatabaseCleared}
+          onRescan={handleRescan}
+          onRefreshMetadata={handleRefreshMetadata}
+          onSyncFileDates={handleSyncFileDates}
           settings={settings}
           onSettingsChange={handleSettingsChange}
+          onRemoveAllArtwork={handleRemoveAllArtwork}
         />
       default:
         return null
@@ -824,15 +935,36 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
         </main>
       </div>
       <AnimatePresence>
-        {playerState.currentTrack && (
+        {playerState.currentTrack && currentPage !== "project-detail" && (
           <AudioPlayer
             playerState={playerState}
             setPlayerState={setPlayerState}
             projects={projects}
             onOpenProject={handleOpenProject}
+            onPlayProject={playProject}
           />
         )}
       </AnimatePresence>
+      {artworkManagerProject && (
+        <ArtworkManager
+          project={artworkManagerProject}
+          isOpen={!!artworkManagerProject}
+          onClose={() => setArtworkManagerProject(null)}
+          settings={settings}
+          onChangeArtwork={handleChangeArtwork}
+          onRemoveArtwork={handleRemoveArtwork}
+          onGenerateArtwork={handleGenerateArtwork}
+          onFetchUnsplashPhoto={handleFetchUnsplashPhoto}
+          onRefresh={async () => {
+            await refreshData()
+            // Fetch the latest project data to update the dialog
+            try {
+              const updated = await window.electron?.getProject(artworkManagerProject.id)
+              if (updated) setArtworkManagerProject(updated)
+            } catch {}
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -846,6 +978,15 @@ function App() {
         try {
           const loadedSettings = await window.electron?.getSettings()
           if (loadedSettings) {
+            // Migrate legacy flStudioPath into dawFolders if needed
+            if (loadedSettings.flStudioPath && !loadedSettings.dawFolders?.["FL Studio"]) {
+              loadedSettings.dawFolders = {
+                ...loadedSettings.dawFolders,
+                "FL Studio": loadedSettings.flStudioPath
+              }
+              // Persist the migration so it only happens once
+              await window.electron?.setSettings(loadedSettings)
+            }
             setSettings(loadedSettings)
           }
         } catch (error) {

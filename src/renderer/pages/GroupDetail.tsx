@@ -66,8 +66,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
+import { useImageUrl } from '@/hooks/useImageUrl'
 import { ProjectCard } from '@/components/ProjectCard'
-import { AudioPlayer } from '@/components/AudioPlayer'
 import { Project, ProjectGroup, AudioPlayerState, AppSettings, ProjectStatus, Tag } from '@shared/types'
 
 interface GroupDetailProps {
@@ -91,6 +91,13 @@ interface GroupDetailProps {
   onFetchUnsplashPhoto: (project: Project) => Promise<void>
   onDeleteProject: (project: Project) => Promise<void>
   onSettingsChange: (settings: Partial<AppSettings>) => void
+  onOpenArtworkManager?: (project: Project) => void
+}
+
+function ArtworkImage({ filePath, alt, className }: { filePath: string | null | undefined, alt: string, className?: string }) {
+  const url = useImageUrl(filePath)
+  if (!url) return null
+  return <img src={url} alt={alt} className={className} />
 }
 
 type SortOption = 'name-asc' | 'name-desc' | 'date-newest' | 'date-oldest' | 'bpm-asc' | 'bpm-desc' | 'key' | 'time-spent-asc' | 'time-spent-desc' | 'tags-asc' | 'tags-desc'
@@ -116,6 +123,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
   onFetchUnsplashPhoto,
   onDeleteProject,
   onSettingsChange,
+  onOpenArtworkManager,
 }) => {
   const [viewMode, setViewModeState] = useState<'grid' | 'list'>(settings.viewMode || 'grid')
   const [searchQuery, setSearchQuery] = useState('')
@@ -123,6 +131,8 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [statusFilter, setStatusFilter] = useState<ProjectStatus[]>([])
   const [dawFilter, setDawFilter] = useState<string[]>([])
+  const [genreFilter, setGenreFilter] = useState<string[]>([])
+  const [artistFilter, setArtistFilter] = useState<string[]>([])
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set())
   const [isEditing, setIsEditing] = useState(false)
@@ -162,6 +172,20 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
     return settings.selectedDAWs
   }, [settings.selectedDAWs])
 
+  // Get all unique genres from group projects
+  const availableGenres = useMemo(() => {
+    const genreSet = new Set<string>()
+    groupProjects.forEach((p) => { if (p.genre) genreSet.add(p.genre) })
+    return Array.from(genreSet).sort()
+  }, [groupProjects])
+
+  // Get all unique artists from group projects
+  const availableArtists = useMemo(() => {
+    const artistSet = new Set<string>()
+    groupProjects.forEach((p) => { if (p.artists) artistSet.add(p.artists) })
+    return Array.from(artistSet).sort()
+  }, [groupProjects])
+
   // Filter and sort projects
   const filteredProjects = useMemo(() => {
     let result = [...groupProjects]
@@ -198,6 +222,20 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
     if (dawFilter.length > 0) {
       result = result.filter(project =>
         project.dawType && dawFilter.includes(project.dawType)
+      )
+    }
+
+    // Genre filter
+    if (genreFilter.length > 0) {
+      result = result.filter(project =>
+        project.genre && genreFilter.includes(project.genre)
+      )
+    }
+
+    // Artist filter
+    if (artistFilter.length > 0) {
+      result = result.filter(project =>
+        project.artists && artistFilter.includes(project.artists)
       )
     }
 
@@ -247,7 +285,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
     }
 
     return result
-  }, [groupProjects, searchQuery, selectedTags, statusFilter, dawFilter, sortBy])
+  }, [groupProjects, searchQuery, selectedTags, statusFilter, dawFilter, genreFilter, artistFilter, sortBy])
 
   // Group statistics
   const stats = useMemo(() => ({
@@ -354,6 +392,22 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
     )
   }
 
+  const handleGenreToggle = (genre: string) => {
+    setGenreFilter(prev =>
+      prev.includes(genre)
+        ? prev.filter(g => g !== genre)
+        : [...prev, genre]
+    )
+  }
+
+  const handleArtistToggle = (artist: string) => {
+    setArtistFilter(prev =>
+      prev.includes(artist)
+        ? prev.filter(a => a !== artist)
+        : [...prev, artist]
+    )
+  }
+
   const exportGroup = async () => {
     const exportData = {
       group: { ...group, exportedAt: new Date().toISOString() },
@@ -375,6 +429,8 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
     if (group.artworkPath) return group.artworkPath
     return groupProjects.find(p => p.artworkPath)?.artworkPath || null
   }
+
+  const groupArtworkUrl = useImageUrl(getGroupArtwork())
 
   const handleAddProjects = async () => {
     if (addProjectsSelectedIds.size > 0) {
@@ -530,9 +586,9 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
               className="relative w-20 h-20 rounded-xl overflow-hidden bg-gradient-to-br from-primary/20 to-primary/5 border border-border/50 flex-shrink-0 cursor-pointer group"
               onClick={handleChangeGroupArtwork}
             >
-              {getGroupArtwork() ? (
+              {groupArtworkUrl ? (
                 <img
-                  src={`appfile://${getGroupArtwork()?.replace(/\\/g, '/')}`}
+                  src={groupArtworkUrl}
                   alt={group.name}
                   className="w-full h-full object-cover"
                 />
@@ -753,12 +809,12 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                     <label className="text-sm font-medium text-foreground">Status</label>
                     <div className="flex flex-wrap gap-2">
                       {[
-                        { id: "idea", title: "Idea", icon: <Lightbulb className="w-3.5 h-3.5" />, color: "text-purple-400", bgColor: "bg-purple-500/10" },
-                        { id: "in-progress", title: "In Progress", icon: <Music className="w-3.5 h-3.5" />, color: "text-blue-400", bgColor: "bg-blue-500/10" },
-                        { id: "mixing", title: "Mixing", icon: <Headphones className="w-3.5 h-3.5" />, color: "text-orange-400", bgColor: "bg-orange-500/10" },
-                        { id: "mastering", title: "Mastering", icon: <Disc3 className="w-3.5 h-3.5" />, color: "text-cyan-400", bgColor: "bg-cyan-500/10" },
-                        { id: "completed", title: "Completed", icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: "text-green-400", bgColor: "bg-green-500/10" },
-                        { id: "released", title: "Released", icon: <PartyPopper className="w-3.5 h-3.5" />, color: "text-pink-400", bgColor: "bg-pink-500/10" },
+                        { id: "idea", title: "Idea", icon: <Lightbulb className="w-3.5 h-3.5" />, color: "text-purple-600 dark:text-purple-400", bgColor: "bg-purple-500/15 dark:bg-purple-500/10" },
+                        { id: "in-progress", title: "In Progress", icon: <Music className="w-3.5 h-3.5" />, color: "text-blue-600 dark:text-blue-400", bgColor: "bg-blue-500/15 dark:bg-blue-500/10" },
+                        { id: "mixing", title: "Mixing", icon: <Headphones className="w-3.5 h-3.5" />, color: "text-orange-600 dark:text-orange-400", bgColor: "bg-orange-500/15 dark:bg-orange-500/10" },
+                        { id: "mastering", title: "Mastering", icon: <Disc3 className="w-3.5 h-3.5" />, color: "text-cyan-600 dark:text-cyan-400", bgColor: "bg-cyan-500/15 dark:bg-cyan-500/10" },
+                        { id: "completed", title: "Completed", icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: "text-green-600 dark:text-green-400", bgColor: "bg-green-500/15 dark:bg-green-500/10" },
+                        { id: "released", title: "Released", icon: <PartyPopper className="w-3.5 h-3.5" />, color: "text-pink-600 dark:text-pink-400", bgColor: "bg-pink-500/15 dark:bg-pink-500/10" },
                       ].map((status) => (
                         <button
                           key={status.id}
@@ -823,14 +879,62 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                     </div>
                   )}
 
+                  {/* Genre Filter */}
+                  {availableGenres.length > 0 && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-foreground">Genre</label>
+                      <div className="flex flex-wrap gap-2">
+                        {availableGenres.map((genre) => (
+                          <button
+                            key={genre}
+                            onClick={() => handleGenreToggle(genre)}
+                            className={cn(
+                              "px-3 py-1.5 rounded-full text-sm font-medium transition-all",
+                              genreFilter.includes(genre)
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                            )}
+                          >
+                            {genre}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Artist Filter */}
+                  {availableArtists.length > 0 && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-foreground">Artist</label>
+                      <div className="flex flex-wrap gap-2">
+                        {availableArtists.map((artist) => (
+                          <button
+                            key={artist}
+                            onClick={() => handleArtistToggle(artist)}
+                            className={cn(
+                              "px-3 py-1.5 rounded-full text-sm font-medium transition-all",
+                              artistFilter.includes(artist)
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                            )}
+                          >
+                            {artist}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Clear All Filters */}
-                  {(selectedTags.length > 0 || statusFilter.length > 0 || dawFilter.length > 0) && (
+                  {(selectedTags.length > 0 || statusFilter.length > 0 || dawFilter.length > 0 || genreFilter.length > 0 || artistFilter.length > 0) && (
                     <div className="pt-2">
                       <button
                         onClick={() => {
                           setSelectedTags([])
                           setStatusFilter([])
                           setDawFilter([])
+                          setGenreFilter([])
+                          setArtistFilter([])
                         }}
                         className="px-3 py-1.5 rounded-full text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors"
                       >
@@ -866,6 +970,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                       isSelected={selectedProjects.has(project.id)}
                       onSelect={() => handleProjectSelect(project)}
                       selectionMode={selectionMode}
+                      isPlaying={playerState.currentTrack?.id === project.id && playerState.isPlaying}
                       onPlay={onPlayProject}
                       onStop={onStopProject}
                       onOpenProject={onOpenProject}
@@ -874,6 +979,9 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                       onChangeArtwork={onChangeArtwork}
                       onRemoveArtwork={onRemoveArtwork}
                       onFetchUnsplashPhoto={onFetchUnsplashPhoto}
+                      unsplashEnabled={settings.unsplashEnabled}
+                      aiArtworkEnabled={settings.autoGenerateArtwork}
+                      onOpenArtworkManager={onOpenArtworkManager}
                       onRemove={async (project) => {
                         const newProjectIds = group.projectIds.filter(id => id !== project.id)
                         await onUpdateGroup(group.id, { projectIds: newProjectIds })
@@ -1039,8 +1147,8 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                           {/* Artwork */}
                           <div className="aspect-square bg-muted relative overflow-hidden">
                             {project.artworkPath ? (
-                              <img
-                                src={`appfile://${project.artworkPath.replace(/\\/g, '/')}`}
+                              <ArtworkImage
+                                filePath={project.artworkPath}
                                 alt={project.title}
                                 className={cn(
                                   "w-full h-full object-cover transition-transform duration-200",
@@ -1102,6 +1210,19 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                               <span>•</span>
                               <span>{project.musicalKey}</span>
                             </div>
+                            {(project.genre || project.artists) && (
+                              <div className="flex items-center gap-1.5 text-xs text-muted-foreground truncate">
+                                {project.artists && (
+                                  <span className="truncate">{project.artists}</span>
+                                )}
+                                {project.artists && project.genre && (
+                                  <span className="text-muted-foreground/50">|</span>
+                                )}
+                                {project.genre && (
+                                  <span className="truncate">{project.genre}</span>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </motion.div>
                       )
@@ -1170,12 +1291,6 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
           </DialogContent>
         </Dialog>
 
-        {/* Audio Player */}
-        <AudioPlayer
-          playerState={playerState}
-          setPlayerState={onPlayerStateChange}
-          projects={projects}
-        />
       </div>
     </TooltipProvider>
   )

@@ -20,6 +20,8 @@ export interface Project {
   fileModifiedAt: string | null
   archived: boolean
   timeSpent?: number | null // in minutes, for time tracking
+  genre?: string | null
+  artists?: string | null
 }
 
 // Audio Version for version control
@@ -132,6 +134,14 @@ export interface Tag {
   color: string
 }
 
+export interface ArtworkHistoryEntry {
+  id: string
+  projectId: string
+  filePath: string
+  source: "file" | "ai" | "unsplash"
+  createdAt: string
+}
+
 export interface FilterOptions {
   searchQuery: string
   sortBy: "name-asc" | "name-desc" | "date-newest" | "date-oldest" | "bpm-asc" | "bpm-desc" | "time-spent-asc" | "time-spent-desc" | "key" | "tags-asc" | "tags-desc"
@@ -139,6 +149,8 @@ export interface FilterOptions {
   collectionFilter: string | null
   statusFilter: ProjectStatus[] | null
   dawFilter: string[] | null
+  genreFilter: string[] | null
+  artistFilter: string[] | null
 }
 
 export interface AudioPlayerState {
@@ -162,6 +174,7 @@ export interface AppSettings {
   dawFolders: Record<string, string | null>
   viewMode: "grid" | "list"
   gridSize: "small" | "medium" | "large"
+  unsplashEnabled: boolean
 }
 
 // Supported DAWs - only these are implemented
@@ -180,6 +193,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   dawFolders: {},
   viewMode: "grid",
   gridSize: "medium",
+  unsplashEnabled: true,
 }
 
 // IPC Channel names
@@ -260,6 +274,4 @@ export const IPC_CHANNELS = {
   DB_UPDATE_ANNOTATION: "db:update-annotation",
   DB_DELETE_ANNOTATION: "db:delete-annotation",
 
-  // Audio analysis
-  AUDIO_GET_WAVEFORM_PEAKS: "audio:get-waveform-peaks",
 } as const

@@ -20,6 +20,9 @@ interface VirtualizedProjectListProps {
   onRemoveArtwork: (project: Project) => Promise<void>;
   onFetchUnsplashPhoto: (project: Project) => Promise<void>;
   onDelete: (project: Project) => Promise<void>;
+  unsplashEnabled?: boolean;
+  aiArtworkEnabled?: boolean;
+  onOpenArtworkManager?: (project: Project) => void;
 }
 
 const ITEM_SIZES = {
@@ -60,6 +63,9 @@ const RowComponent = ({ index, style, ...props }: any) => {
         selectionMode={props.selectionMode}
         viewMode={props.viewMode}
         gridSize={props.gridSize}
+        unsplashEnabled={props.unsplashEnabled}
+        aiArtworkEnabled={props.aiArtworkEnabled}
+        onOpenArtworkManager={props.onOpenArtworkManager}
       />
     </div>
   );
@@ -94,6 +100,9 @@ const CellComponent = ({ columnIndex, rowIndex, style, ...props }: any) => {
         selectionMode={restProps.selectionMode}
         viewMode={restProps.viewMode}
         gridSize={gridSize}
+        unsplashEnabled={restProps.unsplashEnabled}
+        aiArtworkEnabled={restProps.aiArtworkEnabled}
+        onOpenArtworkManager={restProps.onOpenArtworkManager}
       />
     </div>
   );
@@ -116,6 +125,9 @@ export const VirtualizedProjectList: React.FC<VirtualizedProjectListProps> = ({
   onRemoveArtwork,
   onFetchUnsplashPhoto,
   onDelete,
+  unsplashEnabled,
+  aiArtworkEnabled,
+  onOpenArtworkManager,
 }) => {
   const commonProps = {
     projects,
@@ -135,6 +147,9 @@ export const VirtualizedProjectList: React.FC<VirtualizedProjectListProps> = ({
     onRemoveArtwork,
     onFetchUnsplashPhoto,
     onDelete,
+    unsplashEnabled,
+    aiArtworkEnabled,
+    onOpenArtworkManager,
   };
 
   // Calculate available height considering window dimensions and UI elements

@@ -8,11 +8,14 @@ import {
   Save,
   RotateCcw,
   Check,
-  ExternalLink,
   Trash2,
   RefreshCw,
   Music,
-  ChevronDown,
+  Database,
+  ImageOff,
+  FolderSync,
+  FileMusic,
+  Image,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -37,8 +40,12 @@ const isElectron = () => typeof window !== 'undefined' && typeof window.electron
 interface SettingsProps {
   onClose?: () => void
   onDatabaseCleared?: () => void
+  onRescan?: () => Promise<void>
+  onRefreshMetadata?: () => Promise<void>
+  onSyncFileDates?: () => Promise<void>
   settings?: AppSettings
   onSettingsChange?: (settings: Partial<AppSettings>) => void
+  onRemoveAllArtwork?: () => Promise<void>
 }
 
 const aiProviders = [
@@ -60,7 +67,7 @@ const accentColorPresets = [
   { name: "Teal", value: "#14b8a6" },
 ]
 
-export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, settings: externalSettings, onSettingsChange: externalOnSettingsChange }) => {
+export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, onRescan, onRefreshMetadata, onSyncFileDates, settings: externalSettings, onSettingsChange: externalOnSettingsChange, onRemoveAllArtwork }) => {
   const [settings, setSettings] = useState<AppSettings>(externalSettings || DEFAULT_SETTINGS)
   const [originalSettings, setOriginalSettings] = useState<AppSettings>(externalSettings || DEFAULT_SETTINGS)
   const [isLoading, setIsLoading] = useState(true)
@@ -70,6 +77,8 @@ export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, 
   const [isClearing, setIsClearing] = useState(false)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
   const [isUpdatingFileModDates, setIsUpdatingFileModDates] = useState(false)
+  const [isRemovingArtwork, setIsRemovingArtwork] = useState(false)
+  const [showRemoveArtworkConfirm, setShowRemoveArtworkConfirm] = useState(false)
 
   useEffect(() => {
     if (externalSettings) {
@@ -106,21 +115,7 @@ export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, 
     setSettings(DEFAULT_SETTINGS)
   }
 
-  const handleSelectFolder = async (field: "flStudioPath") => {
-    if (!isElectron()) {
-      // In browser mode, show a message or use a text input
-      console.log("Folder selection only available in desktop app")
-      return
-    }
-    try {
-      const folderPath = await window.electron?.selectFolder()
-      if (folderPath) {
-        setSettings((prev) => ({ ...prev, [field]: folderPath }))
-      }
-    } catch (error) {
-      console.error("Failed to select folder:", error)
-    }
-  }
+
 
   const handleSelectDAWFolder = async (daw: string) => {
     if (!isElectron()) {
@@ -165,21 +160,11 @@ export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, 
     }
   }
 
-  const handleUpdateFileModDates = async () => {
-    if (!isElectron()) {
-      console.log("File modification date update only available in desktop app")
-      return
-    }
+  const handleSyncFileDates = async () => {
+    if (!isElectron()) return
     setIsUpdatingFileModDates(true)
     try {
-      const updatedCount = await window.electron?.updateFileModDates()
-      console.log(`Updated file modification dates for ${updatedCount} projects`)
-      // Notify parent to refresh data
-      if (onDatabaseCleared) {
-        onDatabaseCleared()
-      }
-    } catch (error) {
-      console.error("Failed to update file modification dates:", error)
+      await onSyncFileDates?.()
     } finally {
       setIsUpdatingFileModDates(false)
     }
@@ -411,6 +396,23 @@ export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, 
                 checked={settings.excludeAutosaves}
                 onCheckedChange={(checked) =>
                   setSettings((prev) => ({ ...prev, excludeAutosaves: checked }))
+                }
+              />
+            </div>
+
+            <Separator />
+
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label>Unsplash Photos</Label>
+                <p className="text-xs text-muted-foreground">
+                  Enable random Unsplash photo assignment for individual projects and bulk "Add Photos to All"
+                </p>
+              </div>
+              <Switch
+                checked={settings.unsplashEnabled}
+                onCheckedChange={(checked) =>
+                  setSettings((prev) => ({ ...prev, unsplashEnabled: checked }))
                 }
               />
             </div>
@@ -660,72 +662,6 @@ export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, 
                   </p>
                 </div>
 
-                {/* GPU-Specific Instructions */}
-                <div className="space-y-3">
-                  <Label className="text-sm text-muted-foreground">Hardware-Specific Setup</Label>
-                  
-                  {/* NVIDIA */}
-                  <div className="p-3 bg-muted/50 rounded-lg border border-border/30">
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className="w-2 h-2 rounded-full bg-green-500" />
-                      <span className="font-medium text-sm">NVIDIA GPU (RTX/GTX)</span>
-                      <span className="text-xs text-green-500">Best Performance</span>
-                    </div>
-                    <ul className="text-xs text-muted-foreground space-y-1 ml-4">
-                      <li>• Requires 6GB+ VRAM (8GB+ recommended)</li>
-                      <li>• Install <a href="https://developer.nvidia.com/cuda-downloads" className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">CUDA Toolkit</a> for best performance</li>
-                      <li>• Generation takes ~5-15 seconds per image</li>
-                    </ul>
-                  </div>
-
-                  {/* AMD */}
-                  <div className="p-3 bg-muted/50 rounded-lg border border-border/30">
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className="w-2 h-2 rounded-full bg-red-500" />
-                      <span className="font-medium text-sm">AMD GPU (RX 6000/7000)</span>
-                      <span className="text-xs text-yellow-500">Good Performance</span>
-                    </div>
-                    <ul className="text-xs text-muted-foreground space-y-1 ml-4">
-                      <li>• Windows: Use <a href="https://github.com/lshqqytiger/stable-diffusion-webui-directml" className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">DirectML version</a> of WebUI</li>
-                      <li>• Linux: Install ROCm drivers, then use <code className="bg-background/50 px-1 rounded">--use-rocm</code> flag</li>
-                      <li>• Stability Matrix has AMD support built-in</li>
-                    </ul>
-                  </div>
-
-                  {/* CPU Only */}
-                  <div className="p-3 bg-muted/50 rounded-lg border border-border/30">
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className="w-2 h-2 rounded-full bg-blue-500" />
-                      <span className="font-medium text-sm">CPU Only (No GPU)</span>
-                      <span className="text-xs text-muted-foreground">Slow but works</span>
-                    </div>
-                    <ul className="text-xs text-muted-foreground space-y-1 ml-4">
-                      <li>• Add <code className="bg-background/50 px-1 rounded">--use-cpu all --no-half</code> to launch args</li>
-                      <li>• Or in Stability Matrix: Settings → Launch Args → Add CPU flags</li>
-                      <li>• Generation takes 2-10 minutes per image</li>
-                      <li>• Use smaller models like SD 1.5 for faster results</li>
-                    </ul>
-                  </div>
-                </div>
-
-                {/* Manual Install */}
-                <details className="group">
-                  <summary className="flex items-center gap-2 cursor-pointer text-sm text-muted-foreground hover:text-foreground transition-colors">
-                    <ChevronDown className="w-4 h-4 transition-transform group-open:rotate-180" />
-                    Manual Installation (Advanced)
-                  </summary>
-                  <div className="mt-3 p-3 bg-muted/30 rounded-lg text-xs text-muted-foreground space-y-2">
-                    <p>If you prefer manual setup:</p>
-                    <ol className="list-decimal list-inside space-y-1 ml-2">
-                      <li>Install <a href="https://www.python.org/downloads/" className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">Python 3.10</a> (not newer)</li>
-                      <li>Install <a href="https://git-scm.com/" className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">Git</a></li>
-                      <li>Clone: <code className="bg-background/50 px-1 rounded">git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui</code></li>
-                      <li>Run <code className="bg-background/50 px-1 rounded">webui-user.bat</code> (Windows) or <code className="bg-background/50 px-1 rounded">./webui.sh</code> (Mac/Linux)</li>
-                      <li>Download models to <code className="bg-background/50 px-1 rounded">models/Stable-diffusion/</code></li>
-                    </ol>
-                  </div>
-                </details>
-
                 <div className="flex items-center gap-2 p-3 bg-green-500/10 rounded-lg border border-green-500/20">
                   <Check className="w-4 h-4 text-green-500 flex-shrink-0" />
                   <p className="text-xs text-green-400">
@@ -744,67 +680,184 @@ export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, 
           transition={{ delay: 0.3 }}
         >
           <div className="flex items-center gap-2 mb-4">
-            <Trash2 className="w-5 h-5 text-red-500" />
+            <Database className="w-5 h-5 text-primary" />
             <h2 className="text-lg font-semibold">Data Management</h2>
           </div>
-          <div className="space-y-4 p-4 rounded-xl bg-card/50 border border-border/30">
-            <div className="space-y-2">
-              <Label>Clear All Projects</Label>
-              <p className="text-xs text-muted-foreground mb-3">
-                Remove all projects from the database. This action cannot be undone.
-              </p>
-              {!showClearConfirm ? (
+          <div className="space-y-3 p-4 rounded-xl bg-card/50 border border-border/30">
+            {/* Rescan Projects */}
+            <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/20">
+              <div className="flex items-center gap-3">
+                <div className="p-1.5 rounded-md bg-primary/10">
+                  <FolderSync className="w-4 h-4 text-primary" />
+                </div>
+                <div>
+                  <Label className="text-sm">Rescan Project Folders</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Re-scan your DAW folders to find new or changed projects
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  if (!isElectron()) return
+                  await onRescan?.()
+                }}
+              >
+                <FolderSync className="w-4 h-4 mr-2" />
+                Rescan
+              </Button>
+            </div>
+
+            {/* Re-extract Metadata */}
+            <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/20">
+              <div className="flex items-center gap-3">
+                <div className="p-1.5 rounded-md bg-primary/10">
+                  <FileMusic className="w-4 h-4 text-primary" />
+                </div>
+                <div>
+                  <Label className="text-sm">Refresh Project Metadata</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Re-extract BPM, time spent, and other data from all project files
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  if (!isElectron()) return
+                  await onRefreshMetadata?.()
+                }}
+              >
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Refresh
+              </Button>
+            </div>
+
+            {/* Update File Dates */}
+            <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/20">
+              <div className="flex items-center gap-3">
+                <div className="p-1.5 rounded-md bg-primary/10">
+                  <RefreshCw className="w-4 h-4 text-primary" />
+                </div>
+                <div>
+                  <Label className="text-sm">Sync File Dates</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Update project dates from actual file modification times
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleSyncFileDates}
+                disabled={isUpdatingFileModDates}
+              >
+                <RefreshCw className={cn("w-4 h-4 mr-2", isUpdatingFileModDates && "animate-spin")} />
+                {isUpdatingFileModDates ? "Updating..." : "Sync Dates"}
+              </Button>
+            </div>
+
+            <Separator className="my-1" />
+
+            {/* Remove Artwork */}
+            <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/20">
+              <div className="flex items-center gap-3">
+                <div className="p-1.5 rounded-md bg-destructive/10">
+                  <ImageOff className="w-4 h-4 text-destructive" />
+                </div>
+                <div>
+                  <Label className="text-sm">Remove All Artwork</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Delete all generated artwork images from projects
+                  </p>
+                </div>
+              </div>
+              {!showRemoveArtworkConfirm ? (
                 <Button
-                  variant="destructive"
-                  onClick={() => setShowClearConfirm(true)}
-                  className="w-full sm:w-auto"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowRemoveArtworkConfirm(true)}
+                  className="text-destructive border-destructive/30 hover:bg-destructive/10"
                 >
-                  <Trash2 className="w-4 h-4 mr-2" />
-                  Clear Database
+                  <ImageOff className="w-4 h-4 mr-2" />
+                  Remove
                 </Button>
               ) : (
-                <div className="flex flex-col sm:flex-row gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
-                  <p className="text-sm text-red-400 flex-1">
-                    Are you sure? This will delete all projects permanently.
-                  </p>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setShowClearConfirm(false)}
-                      disabled={isClearing}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={handleClearDatabase}
-                      disabled={isClearing}
-                    >
-                      {isClearing ? "Clearing..." : "Yes, Clear All"}
-                    </Button>
-                  </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowRemoveArtworkConfirm(false)}
+                    disabled={isRemovingArtwork}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    disabled={isRemovingArtwork}
+                    onClick={async () => {
+                      setIsRemovingArtwork(true)
+                      try {
+                        await onRemoveAllArtwork?.()
+                      } finally {
+                        setIsRemovingArtwork(false)
+                        setShowRemoveArtworkConfirm(false)
+                      }
+                    }}
+                  >
+                    {isRemovingArtwork ? "Removing..." : "Confirm"}
+                  </Button>
                 </div>
               )}
             </div>
 
-            <Separator />
-
-            <div className="space-y-2">
-              <Label>Update File Modification Dates</Label>
-              <p className="text-xs text-muted-foreground mb-3">
-                Update all existing projects with their actual file modification dates from Windows. This ensures "newest" and "oldest" sorting works correctly.
-              </p>
-              <Button
-                variant="outline"
-                onClick={handleUpdateFileModDates}
-                disabled={isUpdatingFileModDates}
-                className="w-full sm:w-auto"
-              >
-                <RefreshCw className={cn("w-4 h-4 mr-2", isUpdatingFileModDates && "animate-spin")} />
-                {isUpdatingFileModDates ? "Updating..." : "Update File Dates"}
-              </Button>
+            {/* Clear Database */}
+            <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/20">
+              <div className="flex items-center gap-3">
+                <div className="p-1.5 rounded-md bg-destructive/10">
+                  <Trash2 className="w-4 h-4 text-destructive" />
+                </div>
+                <div>
+                  <Label className="text-sm">Clear All Projects</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Remove all projects from the database permanently
+                  </p>
+                </div>
+              </div>
+              {!showClearConfirm ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowClearConfirm(true)}
+                  className="text-destructive border-destructive/30 hover:bg-destructive/10"
+                >
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Clear
+                </Button>
+              ) : (
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowClearConfirm(false)}
+                    disabled={isClearing}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleClearDatabase}
+                    disabled={isClearing}
+                  >
+                    {isClearing ? "Clearing..." : "Confirm"}
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         </motion.section>

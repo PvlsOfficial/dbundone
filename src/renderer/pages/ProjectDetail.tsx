@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useLayoutEffect } from "react"
+import React, { useState, useEffect, useRef, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { useTheme } from "@/components/ThemeProvider"
 import {
@@ -31,7 +31,8 @@ import {
   PartyPopper,
   Archive,
 } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn, assetUrl } from "@/lib/utils"
+import { useImageUrl } from "@/hooks/useImageUrl"
 import {
   Button,
   Input,
@@ -51,7 +52,7 @@ import {
   Separator,
 } from "@/components/ui"
 import { Waveform } from "@/components/Waveform"
-import { Project, AudioVersion, Annotation, AudioPlayerState, Tag } from "@shared/types"
+import { Project, ProjectStatus, AudioVersion, Annotation, AudioPlayerState, Tag } from "@shared/types"
 
 // Helper to convert hex to rgba
 const hexToRgba = (hex: string, alpha: number) => {
@@ -71,6 +72,7 @@ interface ProjectDetailProps {
   setPlayerState: React.Dispatch<React.SetStateAction<AudioPlayerState>>
   tags: Tag[]
   onCreateTag: (name: string, color?: string) => Promise<Tag | null>
+  onOpenArtworkManager?: (project: Project) => void
 }
 
 const ANNOTATION_COLORS = [
@@ -93,15 +95,19 @@ const MUSICAL_KEY_MODES = [
   "Aeolian", "Ionian", "Pentatonic Major", "Pentatonic Minor", "Blues"
 ]
 
-const STATUS_CONFIG: Record<string, { title: string; icon: React.ReactNode; color: string; bgColor: string }> = {
-  'idea': { title: 'Idea', icon: <Lightbulb className="w-3.5 h-3.5" />, color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
-  'in-progress': { title: 'In Progress', icon: <Music className="w-3.5 h-3.5" />, color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
-  'mixing': { title: 'Mixing', icon: <Headphones className="w-3.5 h-3.5" />, color: 'text-orange-400', bgColor: 'bg-orange-500/10' },
-  'mastering': { title: 'Mastering', icon: <Disc3 className="w-3.5 h-3.5" />, color: 'text-cyan-400', bgColor: 'bg-cyan-500/10' },
-  'completed': { title: 'Completed', icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: 'text-green-400', bgColor: 'bg-green-500/10' },
-  'released': { title: 'Released', icon: <PartyPopper className="w-3.5 h-3.5" />, color: 'text-pink-400', bgColor: 'bg-pink-500/10' },
-  'archived': { title: 'Archived', icon: <Archive className="w-3.5 h-3.5" />, color: 'text-gray-400', bgColor: 'bg-gray-500/10' },
+const STATUS_CONFIG: Record<string, { title: string; icon: React.ReactNode; color: string; bgColor: string; hex: string }> = {
+  'idea': { title: 'Idea', icon: <Lightbulb className="w-3.5 h-3.5" />, color: 'text-purple-600 dark:text-purple-400', bgColor: 'bg-purple-500/15 dark:bg-purple-500/10', hex: '#a855f7' },
+  'in-progress': { title: 'In Progress', icon: <Music className="w-3.5 h-3.5" />, color: 'text-blue-600 dark:text-blue-400', bgColor: 'bg-blue-500/15 dark:bg-blue-500/10', hex: '#3b82f6' },
+  'mixing': { title: 'Mixing', icon: <Headphones className="w-3.5 h-3.5" />, color: 'text-orange-600 dark:text-orange-400', bgColor: 'bg-orange-500/15 dark:bg-orange-500/10', hex: '#f97316' },
+  'mastering': { title: 'Mastering', icon: <Disc3 className="w-3.5 h-3.5" />, color: 'text-cyan-600 dark:text-cyan-400', bgColor: 'bg-cyan-500/15 dark:bg-cyan-500/10', hex: '#06b6d4' },
+  'completed': { title: 'Completed', icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: 'text-green-600 dark:text-green-400', bgColor: 'bg-green-500/15 dark:bg-green-500/10', hex: '#22c55e' },
+  'released': { title: 'Released', icon: <PartyPopper className="w-3.5 h-3.5" />, color: 'text-pink-600 dark:text-pink-400', bgColor: 'bg-pink-500/15 dark:bg-pink-500/10', hex: '#ec4899' },
+  'archived': { title: 'Archived', icon: <Archive className="w-3.5 h-3.5" />, color: 'text-gray-600 dark:text-gray-400', bgColor: 'bg-gray-500/15 dark:bg-gray-500/10', hex: '#9ca3af' },
 }
+
+// Ordered pipeline stages for the status stepper
+const STATUS_PIPELINE = ['idea', 'in-progress', 'mixing', 'mastering', 'completed', 'released'] as const
+const STATUS_ARCHIVED = 'archived'
 
 const isElectron = () => typeof window !== 'undefined' && typeof window.electron !== 'undefined'
 
@@ -115,9 +121,9 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
   setPlayerState,
   tags,
   onCreateTag,
+  onOpenArtworkManager,
 }) => {
-  console.log('ProjectDetail render, project:', project)
-  console.log('Project tags:', project?.tags)
+
 
   // Helper to get tag color from tags list
   const getTagColor = (tagName: string) => {
@@ -171,6 +177,8 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
   const [editDawProjectPath, setEditDawProjectPath] = useState(project?.dawProjectPath || null)
   const [editDawType, setEditDawType] = useState(project?.dawType || null)
   const [editTags, setEditTags] = useState<string[]>(project?.tags || [])
+  const [editGenre, setEditGenre] = useState(project?.genre || "")
+  const [editArtists, setEditArtists] = useState(project?.artists || "")
   const [newTag, setNewTag] = useState("")
   const [newTagColor, setNewTagColor] = useState("#6366f1")
 
@@ -190,6 +198,10 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
     ...project,
     artworkPath: optimisticArtworkPath !== undefined ? optimisticArtworkPath : project.artworkPath
   }
+
+  // Compute current artwork path for the hook (must be at top level, not inside JSX)
+  const currentArtworkPath = optimisticArtworkPath !== undefined ? optimisticArtworkPath : project.artworkPath
+  const artworkUrl = useImageUrl(currentArtworkPath)
 
   // Helper function to parse musical key into root and mode
   const parseMusicalKey = (key: string) => {
@@ -212,7 +224,7 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [volume, setVolume] = useState(0.8)
-  const blobUrlRef = useRef<string | null>(null)
+
 
   // Load versions
   useEffect(() => {
@@ -230,6 +242,8 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
       setEditDawProjectPath(project.dawProjectPath || null)
       setEditDawType(project.dawType || null)
       setEditTags(project.tags || [])
+      setEditGenre(project.genre || "")
+      setEditArtists(project.artists || "")
       const { root, mode } = parseMusicalKey(project.musicalKey)
       setEditKeyRoot(root)
       setEditKeyMode(mode)
@@ -246,6 +260,7 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
     if (optimisticProject && 
         optimisticProject.title === project.title &&
         optimisticProject.bpm === project.bpm &&
+        optimisticProject.status === project.status &&
         JSON.stringify(optimisticProject.tags) === JSON.stringify(project.tags)) {
       setOptimisticProject(null)
     }
@@ -258,15 +273,47 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
     }
   }, [selectedVersion?.id])
 
-  // Initialize audio when version changes
-  useLayoutEffect(() => {
-    console.log('useLayoutEffect triggered, selectedVersion:', selectedVersion)
-    if (!selectedVersion) {
-      console.log('useLayoutEffect: No selected version, returning')
-      return
-    }
+  // Create a persistent audio element once (reuse across version switches)
+  useEffect(() => {
+    const audio = new Audio()
+    audio.preload = 'auto'
+    audioRef.current = audio
 
-    let isMounted = true // Track if component is still mounted
+    audio.addEventListener('loadedmetadata', () => {
+      setDuration(audio.duration || 0)
+      setIsReady(true)
+    })
+    audio.addEventListener('canplay', () => {
+      setIsReady(true)
+    })
+    audio.addEventListener('timeupdate', () => {
+      setCurrentTime(audio.currentTime)
+    })
+    audio.addEventListener('ended', () => {
+      setIsPlaying(false)
+      setCurrentTime(0)
+    })
+    audio.addEventListener('play', () => {
+      setIsPlaying(true)
+    })
+    audio.addEventListener('pause', () => {
+      setIsPlaying(false)
+    })
+    audio.addEventListener('error', (error) => {
+      console.error("HTML5 Audio error:", error)
+      setIsReady(false)
+    })
+
+    return () => {
+      audio.pause()
+      audio.src = ''
+      audioRef.current = null
+    }
+  }, [])
+
+  // Swap audio source when version changes (reuse existing element)
+  useEffect(() => {
+    if (!selectedVersion || !audioRef.current) return
 
     // Reset audio state immediately when version changes
     setIsReady(false)
@@ -274,105 +321,15 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
     setCurrentTime(0)
     setDuration(0)
 
-    // Clean up previous audio element
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current.src = ''
-      audioRef.current = null
-    }
-
-    // Clean up previous blob URL
-    if (blobUrlRef.current) {
-      URL.revokeObjectURL(blobUrlRef.current)
-      blobUrlRef.current = null
-    }
-
-    // Load audio
-    const loadAudio = async () => {
-      try {
-        const arrayBuffer = await window.electron?.loadAudioFile(selectedVersion.filePath)
-        if (!arrayBuffer) {
-          throw new Error("Failed to load audio file")
-        }
-
-        // Determine MIME type based on file extension
-        const filePath = selectedVersion.filePath.toLowerCase()
-        let mimeType = 'audio/mpeg' // default
-        if (filePath.endsWith('.wav')) {
-          mimeType = '' // Let browser detect for WAV
-        } else if (filePath.endsWith('.flac')) {
-          mimeType = 'audio/flac'
-        } else if (filePath.endsWith('.ogg')) {
-          mimeType = 'audio/ogg'
-        } else if (filePath.endsWith('.m4a') || filePath.endsWith('.aac')) {
-          mimeType = 'audio/mp4'
-        }
-        
-        const blob = new Blob([arrayBuffer], mimeType ? { type: mimeType } : {})
-        const blobUrl = URL.createObjectURL(blob)
-        blobUrlRef.current = blobUrl
-
-        // Create new HTML5 audio element
-        const audio = new Audio(blobUrl)
-        audioRef.current = audio
-        
-        audio.addEventListener('loadedmetadata', () => {
-          if (isMounted) {
-            setIsReady(true)
-            setDuration(audio.duration || 0)
-          }
-        })
-        audio.addEventListener('timeupdate', () => {
-          if (isMounted) {
-            setCurrentTime(audio.currentTime)
-          }
-        })
-        audio.addEventListener('ended', () => {
-          if (isMounted) {
-            setIsPlaying(false)
-            setCurrentTime(0)
-          }
-        })
-        audio.addEventListener('play', () => {
-          if (isMounted) setIsPlaying(true)
-        })
-        audio.addEventListener('pause', () => {
-          if (isMounted) setIsPlaying(false)
-        })
-        audio.addEventListener('error', (error) => {
-          console.error("HTML5 Audio error:", error)
-          if (isMounted) setIsReady(false)
-        })
-        
-      } catch (error) {
-        console.error("CRITICAL ERROR in loadAudio:", error)
-        console.error("Error stack:", error instanceof Error ? error.stack : 'No stack trace')
-        setIsReady(false)
-      }
-    }
-
-    loadAudio()
-
-    return () => {
-      isMounted = false // Mark as unmounted
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current)
-        blobUrlRef.current = null
-      }
-      if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current.src = ''
-        audioRef.current = null
-      }
+    try {
+      const audioAssetUrl = assetUrl(selectedVersion.filePath)
+      audioRef.current.src = audioAssetUrl
+      audioRef.current.load()
+    } catch (error) {
+      console.error("Failed to load audio:", error)
+      setIsReady(false)
     }
   }, [selectedVersion?.id])
-
-  // Add error boundary debugging
-  useEffect(() => {
-    return () => {
-      // Component unmounting cleanup
-    }
-  })
 
   // Handle volume changes
   useEffect(() => {
@@ -382,16 +339,10 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
   }, [volume])
 
   const loadVersions = async (skipAutoSelect: boolean = false): Promise<AudioVersion[] | undefined> => {
-    console.log('loadVersions called, project:', project, 'isElectron:', isElectron())
-    if (!isElectron() || !project?.id) {
-      console.log('loadVersions: Skipping due to missing electron or project id')
-      return
-    }
+    if (!isElectron() || !project?.id) return
     setIsLoading(true)
     try {
-      console.log('loadVersions: Calling getVersionsByProject for project:', project.id)
       const data = await window.electron?.getVersionsByProject(project.id)
-      console.log('loadVersions: Received data:', data)
       setVersions(data || [])
       
       if (skipAutoSelect) {
@@ -400,8 +351,6 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
       
       // If project has an audio preview, create a "Main" version entry if none exists
       if (data?.length === 0 && project.audioPreviewPath) {
-        console.log('loadVersions: Creating main preview version')
-        // Select the project's main audio as default
         setSelectedVersion({
           id: "main",
           projectId: project.id,
@@ -412,7 +361,6 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
           createdAt: project.createdAt,
         })
       } else if (data && data.length > 0) {
-        console.log('loadVersions: Setting selected version to first version:', data[0])
         setSelectedVersion(data[0])
         setExpandedVersions(new Set([data[0].id]))
       }
@@ -473,9 +421,11 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
   const handleAddVersion = async () => {
     if (!isElectron()) return
     try {
-      // Open file picker in the project's DAW folder if available
-      const defaultPath = project.dawProjectPath || undefined
-      const filePath = await window.electron?.selectAudio(defaultPath || undefined)
+      // Open file picker in the project's folder if available
+      const projectDir = project.dawProjectPath
+        ? project.dawProjectPath.replace(/[\\/][^\\/]+$/, '')
+        : undefined
+      const filePath = await window.electron?.selectAudio(projectDir)
       if (filePath) {
         // Check if this will be auto-starred (first version or no favorite set)
         const willAutoStar = versions.length === 0 || !project.favoriteVersionId
@@ -492,9 +442,10 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
           await loadVersions()
           setSelectedVersion(version)
           
-          // Optimistically set favorite if auto-starred
+          // Auto-star if it's the first version or no favorite is set
           if (willAutoStar) {
             setOptimisticFavoriteId(version.id)
+            await window.electron?.updateProject(project.id, { favoriteVersionId: version.id })
           }
           
           // Refresh project data to sync with database
@@ -647,6 +598,8 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
         dawType: editDawType,
         musicalKey: editKeyRoot === "None" ? "None" : `${editKeyRoot} ${editKeyMode}`,
         tags: editTags,
+        genre: editGenre.trim() || null,
+        artists: editArtists.trim() || null,
         updatedAt: new Date().toISOString(),
       }
       setOptimisticProject(optimisticUpdate)
@@ -659,6 +612,8 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
         dawType: editDawType,
         musicalKey: editKeyRoot === "None" ? "None" : `${editKeyRoot} ${editKeyMode}`,
         tags: editTags,
+        genre: editGenre.trim() || null,
+        artists: editArtists.trim() || null,
       })
       setIsEditingProject(false)
       await onRefresh()
@@ -667,6 +622,18 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
     } catch (error) {
       console.error("Failed to update project:", error)
       // Revert optimistic update on error
+      setOptimisticProject(null)
+    }
+  }
+
+  const handleStatusChange = async (newStatus: string) => {
+    if (!isElectron() || newStatus === displayProject.status) return
+    try {
+      setOptimisticProject({ ...project, status: newStatus as ProjectStatus, updatedAt: new Date().toISOString() })
+      await window.electron?.updateProject(project.id, { status: newStatus as ProjectStatus })
+      await onRefresh()
+    } catch (error) {
+      console.error("Failed to update status:", error)
       setOptimisticProject(null)
     }
   }
@@ -690,6 +657,7 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
         setOptimisticArtworkPath(imagePath)
         
         await window.electron?.updateProject(project.id, { artworkPath: imagePath })
+        await window.electron?.addArtworkHistoryEntry(project.id, imagePath, "file")
         await onRefresh()
         
         // Don't manually clear optimistic state - let the useEffect handle it
@@ -759,14 +727,12 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
               {/* Artwork */}
               <div 
                 className="relative w-20 h-20 rounded-xl overflow-hidden bg-muted flex-shrink-0 cursor-pointer hover:ring-2 hover:ring-primary/50 transition-all group"
-                onClick={handleChangeArtwork}
-                title="Click to change artwork"
+                onClick={() => onOpenArtworkManager ? onOpenArtworkManager(project) : handleChangeArtwork()}
+                title={onOpenArtworkManager ? "Manage artwork" : "Click to change artwork"}
               >
-                {(() => {
-                  const currentArtworkPath = optimisticArtworkPath !== undefined ? optimisticArtworkPath : project.artworkPath
-                  return currentArtworkPath ? (
+                {artworkUrl ? (
                     <img
-                      src={`appfile://${currentArtworkPath.replace(/\\/g, "/")}`}
+                      src={artworkUrl}
                       alt={project.title}
                       className="w-full h-full object-cover"
                     />
@@ -774,300 +740,164 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
                     <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-primary/20 to-primary/5">
                       <Music className="w-8 h-8 text-primary" />
                     </div>
-                  )
-                })()}
-                {/* Overlay with change/remove icons */}
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100 gap-2">
-                  {(() => {
-                    const currentArtworkPath = optimisticArtworkPath !== undefined ? optimisticArtworkPath : project.artworkPath
-                    return currentArtworkPath && (
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          handleRemoveArtwork()
-                          return false
-                        }}
-                        className="p-1.5 bg-destructive/80 hover:bg-destructive rounded-full text-white transition-colors z-10"
-                        title="Remove artwork"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    )
-                  })()}
-                  <button
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      handleChangeArtwork()
-                      return false
-                    }}
-                    className="p-1.5 bg-primary/80 hover:bg-primary rounded-full text-white transition-colors z-10"
-                    title="Change artwork"
-                  >
-                    <Image className="w-4 h-4" />
-                  </button>
+                  )}
+                {/* Hover overlay */}
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                  <Image className="w-5 h-5 text-white drop-shadow-md" />
                 </div>
               </div>
 
               {/* Project Info */}
               <div className="flex-1 min-w-0">
-                {isEditingProject ? (
-                  <div className="space-y-6 p-4 bg-muted/30 rounded-lg border">
-                    {/* Project Title */}
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">Project Title</label>
-                      <Input
-                        value={editTitle}
-                        onChange={(e) => setEditTitle(e.target.value)}
-                        className="text-xl font-bold"
-                        placeholder="Enter project title"
-                      />
-                    </div>
-
-                    {/* Musical Properties */}
-                    <div className="space-y-4">
-                      <h3 className="text-sm font-semibold text-foreground uppercase tracking-wide">Musical Properties</h3>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        {/* BPM - Only show for Ableton projects */}
-                        {project.dawType?.toLowerCase().includes('ableton') && (
-                          <div className="space-y-2">
-                            <label className="text-sm font-medium text-foreground">BPM</label>
-                            <Input
-                              type="number"
-                              value={editBpm || ""}
-                              onChange={(e) => setEditBpm(parseInt(e.target.value) || 0)}
-                              placeholder="120"
-                              className="w-full"
-                            />
-                          </div>
-                        )}
-
-                        {/* Musical Key Root */}
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium text-foreground">Key Root</label>
-                          <Select value={editKeyRoot} onValueChange={setEditKeyRoot}>
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="Select key" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {MUSICAL_KEY_ROOTS.map((key) => (
-                                <SelectItem key={key} value={key}>
-                                  {key === "None" ? "No key" : key}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-
-                        {/* Musical Key Mode */}
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium text-foreground">Key Mode</label>
-                          <Select value={editKeyMode} onValueChange={setEditKeyMode} disabled={editKeyRoot === "None"}>
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="Select mode" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {MUSICAL_KEY_MODES.map((mode) => (
-                                <SelectItem key={mode} value={mode}>
-                                  {mode}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Tags */}
-                    <div className="space-y-3">
-                      <label className="text-sm font-semibold text-foreground uppercase tracking-wide">Tags</label>
-                      <div className="flex flex-wrap gap-2 mb-3">
-                        {editTags.map((tag) => {
-                          const tagColor = getTagColor(tag)
-                          return (
-                            <Badge
-                              key={tag}
-                              variant="secondary"
-                              className="gap-1 border-0"
-                              style={{
-                                backgroundColor: `${tagColor}20`,
-                                color: tagColor
-                              }}
-                            >
-                              {tag}
-                              <X
-                                className="w-3 h-3 cursor-pointer hover:opacity-70"
-                                onClick={() => removeTag(tag)}
-                              />
-                            </Badge>
-                          )
-                        })}
-                      </div>
-                      <div className="flex gap-2">
-                        <Input
-                          value={newTag}
-                          onChange={(e) => setNewTag(e.target.value)}
-                          placeholder="Add a tag..."
-                          onKeyPress={(e) => e.key === 'Enter' && addTag()}
-                          className="flex-1"
-                        />
-                        <Button type="button" variant="outline" onClick={addTag} disabled={!newTag.trim()}>
-                          <Plus className="w-4 h-4" />
-                        </Button>
-                      </div>
-                      <div className="flex flex-wrap gap-1 mt-3">
-                        {tags.filter(tag => !editTags.includes(tag.name)).slice(0, 6).map((tag) => (
-                          <Button
-                            key={tag.id}
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs border-0"
-                            style={{
-                              backgroundColor: `${tag.color}20`,
-                              color: tag.color
-                            }}
-                            onClick={() => {
-                              setEditTags([...editTags, tag.name])
-                              setNewTag("")
-                            }}
-                          >
-                            + {tag.name}
-                          </Button>
-                        ))}
-                        {/* Create new tag button when typing */}
-                        {newTag.trim() && !tags.some(t => t.name.toLowerCase() === newTag.trim().toLowerCase()) && (
-                          <div className="flex items-center gap-2 p-3 bg-muted/50 rounded-md border mt-2">
-                            <div className="flex flex-wrap gap-1">
-                              {colorPresets.map((color) => (
-                                <button
-                                  key={color}
-                                  type="button"
-                                  title={`Select color ${color}`}
-                                  className={`w-5 h-5 rounded-full border-2 transition-transform hover:scale-110 ${
-                                    newTagColor === color ? 'border-white ring-2 ring-offset-1 ring-offset-background ring-primary' : 'border-transparent'
-                                  }`}
-                                  style={{ backgroundColor: color }}
-                                  onClick={() => setNewTagColor(color)}
-                                />
-                              ))}
-                            </div>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-6 px-2 text-xs hover:bg-primary/30"
-                              style={{
-                                backgroundColor: `${newTagColor}20`,
-                                color: newTagColor
-                              }}
-                              onClick={async () => {
-                                const tagName = newTag.trim();
-                                await onCreateTag(tagName, newTagColor);
-                                setEditTags([...editTags, tagName]);
-                                setNewTag("");
-                                setNewTagColor("#6366f1");
-                              }}
-                            >
-                              Create "{newTag.trim()}"
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* DAW Project File */}
-                    <div className="space-y-3">
-                      <label className="text-sm font-semibold text-foreground uppercase tracking-wide">DAW Project File</label>
-                      <div className="flex gap-2">
-                        <Input
-                          value={editDawProjectPath || ""}
-                          readOnly
-                          placeholder="No file selected"
-                          className="flex-1"
-                        />
-                        <Button variant="outline" onClick={handleSelectProject}>
-                          <Folder className="w-4 h-4 mr-2" />
-                          Browse
-                        </Button>
-                      </div>
-                    </div>
-
-                    {/* Action Buttons */}
-                    <div className="flex gap-2 pt-4 border-t">
-                      <Button onClick={handleSaveProject} className="flex-1">
-                        <Save className="w-4 h-4 mr-2" />
-                        Save Changes
-                      </Button>
-                      <Button variant="outline" onClick={() => setIsEditingProject(false)}>
-                        <X className="w-4 h-4 mr-2" />
-                        Cancel
-                      </Button>
-                    </div>
+                <h1 className="text-2xl font-bold truncate">{displayProject.title}</h1>
+                <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                  {displayProject.bpm > 0 && (
+                    <span>{displayProject.bpm} BPM</span>
+                  )}
+                  {displayProject.timeSpent && displayProject.timeSpent > 0 && !displayProject.dawType?.toLowerCase().includes('ableton') && (
+                    <span>{displayProject.timeSpent}m</span>
+                  )}
+                  {displayProject.musicalKey !== "None" && (
+                    <span>• {displayProject.musicalKey}</span>
+                  )}
+                  {displayProject.collectionName && (
+                    <Badge variant="outline">{displayProject.collectionName}</Badge>
+                  )}
+                  {displayProject.artists && (
+                    <span>• {displayProject.artists}</span>
+                  )}
+                  {displayProject.genre && (
+                    <span>• {displayProject.genre}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
+                  <span>Created: {new Date(displayProject.createdAt).toLocaleDateString()}</span>
+                  <span>•</span>
+                  <span>Updated: {new Date(displayProject.updatedAt).toLocaleDateString()}</span>
+                </div>
+                {displayProject.tags && displayProject.tags.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {displayProject.tags.map((tag) => (
+                      <Badge 
+                        key={tag} 
+                        variant="secondary" 
+                        className="text-xs border-0"
+                        style={{ 
+                          backgroundColor: `${getTagColor(tag)}20`,
+                          color: getTagColor(tag)
+                        }}
+                      >
+                        {tag}
+                      </Badge>
+                    ))}
                   </div>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <h1 className="text-2xl font-bold truncate">{displayProject.title}</h1>
-                      {displayProject.status && STATUS_CONFIG[displayProject.status] && (
-                        <Badge 
-                          variant="secondary" 
-                          className={`${STATUS_CONFIG[displayProject.status].bgColor} ${STATUS_CONFIG[displayProject.status].color} border-0 gap-1`}
-                        >
-                          {STATUS_CONFIG[displayProject.status].icon}
-                          {STATUS_CONFIG[displayProject.status].title}
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                      {displayProject.bpm > 0 && (
-                        <span>{displayProject.bpm} BPM</span>
-                      )}
-                      {displayProject.timeSpent && displayProject.timeSpent > 0 && (
-                        <span>{displayProject.timeSpent}m</span>
-                      )}
-                      {displayProject.musicalKey !== "None" && (
-                        <span>• {displayProject.musicalKey}</span>
-                      )}
-                      {displayProject.collectionName && (
-                        <Badge variant="outline">{displayProject.collectionName}</Badge>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
-                      <span>Created: {new Date(displayProject.createdAt).toLocaleDateString()}</span>
-                      <span>•</span>
-                      <span>Updated: {new Date(displayProject.updatedAt).toLocaleDateString()}</span>
-                    </div>
-                    {displayProject.tags && displayProject.tags.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {displayProject.tags.map((tag) => (
-                          <Badge 
-                            key={tag} 
-                            variant="secondary" 
-                            className="text-xs border-0"
-                            style={{ 
-                              backgroundColor: `${getTagColor(tag)}20`,
-                              color: getTagColor(tag)
-                            }}
-                          >
-                            {tag}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
-                  </>
                 )}
+
+                {/* Status Pipeline */}
+                <div className="flex items-center gap-1 mt-3">
+                  {STATUS_PIPELINE.map((statusKey, index) => {
+                    const config = STATUS_CONFIG[statusKey]
+                    const isActive = displayProject.status === statusKey
+                    const currentIndex = STATUS_PIPELINE.indexOf(displayProject.status as typeof STATUS_PIPELINE[number])
+                    const isPast = currentIndex >= 0 && index < currentIndex
+                    const isArchived = displayProject.status === STATUS_ARCHIVED
+
+                    return (
+                      <React.Fragment key={statusKey}>
+                        {/* Connector line */}
+                        {index > 0 && (
+                          <div
+                            className="h-[2px] w-4 flex-shrink-0 rounded-full transition-colors duration-200"
+                            style={{
+                              backgroundColor: isPast && !isArchived
+                                ? `${config.hex}40`
+                                : 'hsl(var(--border) / 0.3)'
+                            }}
+                          />
+                        )}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              onClick={() => handleStatusChange(statusKey)}
+                              className={cn(
+                                "relative flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all duration-200",
+                                "outline-none focus-visible:ring-2 focus-visible:ring-primary/50",
+                                isActive
+                                  ? "shadow-sm"
+                                  : isPast && !isArchived
+                                    ? "opacity-50 hover:opacity-80"
+                                    : "opacity-30 hover:opacity-60"
+                              )}
+                              style={isActive ? {
+                                backgroundColor: `${config.hex}20`,
+                                color: config.hex,
+                                boxShadow: `0 0 12px ${config.hex}15`,
+                              } : isPast && !isArchived ? {
+                                color: config.hex,
+                              } : {
+                                color: 'hsl(var(--muted-foreground))',
+                              }}
+                            >
+                              {/* Active indicator dot */}
+                              {isActive && (
+                                <motion.div
+                                  layoutId="statusIndicator"
+                                  className="absolute inset-0 rounded-full border"
+                                  style={{ borderColor: `${config.hex}40` }}
+                                  transition={{ type: "spring", bounce: 0.2, duration: 0.4 }}
+                                />
+                              )}
+                              <span className="relative z-10 flex items-center gap-1.5">
+                                {config.icon}
+                                <span className="hidden sm:inline">{config.title}</span>
+                              </span>
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" className="text-xs">
+                            {isActive ? `Current: ${config.title}` : `Set to ${config.title}`}
+                          </TooltipContent>
+                        </Tooltip>
+                      </React.Fragment>
+                    )
+                  })}
+
+                  {/* Archive - separated */}
+                  <div className="h-4 w-[1px] bg-border/30 mx-1 flex-shrink-0" />
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={() => handleStatusChange(STATUS_ARCHIVED)}
+                        className={cn(
+                          "flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium transition-all duration-200",
+                          "outline-none focus-visible:ring-2 focus-visible:ring-primary/50",
+                          displayProject.status === STATUS_ARCHIVED
+                            ? "shadow-sm"
+                            : "opacity-30 hover:opacity-60"
+                        )}
+                        style={displayProject.status === STATUS_ARCHIVED ? {
+                          backgroundColor: `${STATUS_CONFIG[STATUS_ARCHIVED].hex}20`,
+                          color: STATUS_CONFIG[STATUS_ARCHIVED].hex,
+                        } : {
+                          color: 'hsl(var(--muted-foreground))',
+                        }}
+                      >
+                        {STATUS_CONFIG[STATUS_ARCHIVED].icon}
+                        <span className="hidden sm:inline">{STATUS_CONFIG[STATUS_ARCHIVED].title}</span>
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-xs">
+                      {displayProject.status === STATUS_ARCHIVED ? 'Currently archived' : 'Archive project'}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
               </div>
 
               {/* Action Buttons */}
               <div className="flex items-center gap-2">
-                {!isEditingProject && (
-                  <Button variant="ghost" size="sm" onClick={() => setIsEditingProject(true)}>
-                    <Edit2 className="w-4 h-4 mr-1" />
-                    Edit
-                  </Button>
-                )}
+                <Button variant="ghost" size="sm" onClick={() => setIsEditingProject(!isEditingProject)}>
+                  <Edit2 className="w-4 h-4 mr-1" />
+                  {isEditingProject ? "Close" : "Edit"}
+                </Button>
                 {project.dawProjectPath && (
                   <Button variant="outline" size="sm" onClick={() => onOpenDaw(project)}>
                     <Folder className="w-4 h-4 mr-1" />
@@ -1078,6 +908,229 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Edit Panel - slides down below header */}
+        <AnimatePresence>
+          {isEditingProject && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2, ease: "easeInOut" }}
+              className="overflow-hidden border-b border-border/30 bg-card/30"
+            >
+              <div className="p-5 max-w-4xl mx-auto">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                  {/* Left column */}
+                  <div className="space-y-4">
+                    {/* Title */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground">Title</label>
+                      <Input
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        className="h-9 font-semibold"
+                        placeholder="Project title"
+                      />
+                    </div>
+
+                    {/* Key & BPM row */}
+                    <div className="flex gap-3">
+                      {project.dawType?.toLowerCase().includes('ableton') && (
+                        <div className="space-y-1.5 w-24">
+                          <label className="text-xs font-medium text-muted-foreground">BPM</label>
+                          <Input
+                            type="number"
+                            value={editBpm || ""}
+                            onChange={(e) => setEditBpm(parseInt(e.target.value) || 0)}
+                            placeholder="120"
+                            className="h-9"
+                          />
+                        </div>
+                      )}
+                      <div className="space-y-1.5 flex-1">
+                        <label className="text-xs font-medium text-muted-foreground">Key</label>
+                        <Select value={editKeyRoot} onValueChange={setEditKeyRoot}>
+                          <SelectTrigger className="h-9">
+                            <SelectValue placeholder="Key" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {MUSICAL_KEY_ROOTS.map((key) => (
+                              <SelectItem key={key} value={key}>
+                                {key === "None" ? "No key" : key}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1.5 flex-1">
+                        <label className="text-xs font-medium text-muted-foreground">Scale</label>
+                        <Select value={editKeyMode} onValueChange={setEditKeyMode} disabled={editKeyRoot === "None"}>
+                          <SelectTrigger className="h-9">
+                            <SelectValue placeholder="Scale" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {MUSICAL_KEY_MODES.map((mode) => (
+                              <SelectItem key={mode} value={mode}>
+                                {mode}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    {/* Genre & Artists */}
+                    <div className="flex gap-3">
+                      <div className="space-y-1.5 flex-1">
+                        <label className="text-xs font-medium text-muted-foreground">Genre</label>
+                        <Input
+                          value={editGenre}
+                          onChange={(e) => setEditGenre(e.target.value)}
+                          placeholder="e.g., Hip Hop, Electronic"
+                          className="h-9"
+                        />
+                      </div>
+                      <div className="space-y-1.5 flex-1">
+                        <label className="text-xs font-medium text-muted-foreground">Artists</label>
+                        <Input
+                          value={editArtists}
+                          onChange={(e) => setEditArtists(e.target.value)}
+                          placeholder="e.g., Artist name"
+                          className="h-9"
+                        />
+                      </div>
+                    </div>
+
+                    {/* DAW Project File */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground">DAW Project File</label>
+                      <div className="flex gap-2">
+                        <Input
+                          value={editDawProjectPath || ""}
+                          readOnly
+                          placeholder="No file linked"
+                          className="h-9 flex-1 text-xs"
+                        />
+                        <Button variant="outline" size="sm" onClick={handleSelectProject} className="h-9 px-3">
+                          <Folder className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right column - Tags */}
+                  <div className="space-y-3">
+                    <label className="text-xs font-medium text-muted-foreground">Tags</label>
+
+                    {/* Current tags */}
+                    <div className="flex flex-wrap gap-1.5 min-h-[28px]">
+                      {editTags.map((tag) => {
+                        const tagColor = getTagColor(tag)
+                        return (
+                          <Badge
+                            key={tag}
+                            variant="secondary"
+                            className="gap-1 border-0 h-6 text-xs"
+                            style={{ backgroundColor: `${tagColor}20`, color: tagColor }}
+                          >
+                            {tag}
+                            <X
+                              className="w-3 h-3 cursor-pointer opacity-60 hover:opacity-100"
+                              onClick={() => removeTag(tag)}
+                            />
+                          </Badge>
+                        )
+                      })}
+                      {editTags.length === 0 && (
+                        <span className="text-xs text-muted-foreground/50 italic">No tags</span>
+                      )}
+                    </div>
+
+                    {/* Add tag input */}
+                    <div className="flex gap-2">
+                      <Input
+                        value={newTag}
+                        onChange={(e) => setNewTag(e.target.value)}
+                        placeholder="Type to add or create..."
+                        onKeyPress={(e) => e.key === 'Enter' && addTag()}
+                        className="h-8 text-xs flex-1"
+                      />
+                      <Button type="button" variant="outline" size="sm" onClick={addTag} disabled={!newTag.trim()} className="h-8 px-2">
+                        <Plus className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+
+                    {/* Quick-add existing tags */}
+                    <div className="flex flex-wrap gap-1">
+                      {tags.filter(tag => !editTags.includes(tag.name)).slice(0, 8).map((tag) => (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          className="h-6 px-2 text-[11px] rounded-md transition-colors hover:opacity-80"
+                          style={{ backgroundColor: `${tag.color}15`, color: tag.color }}
+                          onClick={() => {
+                            setEditTags([...editTags, tag.name])
+                            setNewTag("")
+                          }}
+                        >
+                          + {tag.name}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Create new tag inline */}
+                    {newTag.trim() && !tags.some(t => t.name.toLowerCase() === newTag.trim().toLowerCase()) && (
+                      <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/30 border border-border/30">
+                        <div className="flex gap-0.5">
+                          {colorPresets.slice(0, 10).map((color) => (
+                            <button
+                              key={color}
+                              type="button"
+                              className={cn(
+                                "w-4 h-4 rounded-full transition-all",
+                                newTagColor === color ? "ring-2 ring-offset-1 ring-offset-background ring-primary scale-110" : "hover:scale-110"
+                              )}
+                              style={{ backgroundColor: color }}
+                              onClick={() => setNewTagColor(color)}
+                            />
+                          ))}
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-[11px] ml-auto"
+                          style={{ backgroundColor: `${newTagColor}20`, color: newTagColor }}
+                          onClick={async () => {
+                            const tagName = newTag.trim()
+                            await onCreateTag(tagName, newTagColor)
+                            setEditTags([...editTags, tagName])
+                            setNewTag("")
+                            setNewTagColor("#6366f1")
+                          }}
+                        >
+                          Create "{newTag.trim()}"
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Save bar */}
+                <div className="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-border/20">
+                  <Button variant="ghost" size="sm" onClick={() => setIsEditingProject(false)}>
+                    Cancel
+                  </Button>
+                  <Button size="sm" onClick={handleSaveProject}>
+                    <Save className="w-3.5 h-3.5 mr-1.5" />
+                    Save
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Main Content */}
         <ScrollArea className="flex-1">

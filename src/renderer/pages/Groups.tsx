@@ -55,6 +55,13 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
+import { useImageUrl } from '@/hooks/useImageUrl';
+
+function ArtworkImage({ filePath, alt, className }: { filePath: string | null | undefined, alt: string, className?: string }) {
+  const url = useImageUrl(filePath)
+  if (!url) return null
+  return <img src={url} alt={alt} className={className} />
+}
 
 // Motion component that forwards refs for ContextMenu compatibility
 const MotionDiv = React.forwardRef<
@@ -75,6 +82,7 @@ interface GroupsProps {
 
 export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRefresh, onOpenGroup, onUpdateGroup, onDeleteGroup, onSettingsChange }) => {
   const [selectedGroup, setSelectedGroup] = useState<ProjectGroup | null>(null);
+  
   const [isCreating, setIsCreating] = useState(false);
   const [isSelectingProjects, setIsSelectingProjects] = useState(false);
   const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set());
@@ -129,6 +137,8 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
     description: '',
     artworkPath: null as string | null,
   });
+
+  const formArtworkUrl = useImageUrl(formData.artworkPath);
 
   const handleCreateGroup = () => {
     setIsCreating(true);
@@ -326,8 +336,8 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                       // Grid view card
                       <div className="relative aspect-square rounded-2xl overflow-hidden bg-card border border-border/50 transition-all duration-300 group-hover:border-primary/30 group-hover:shadow-xl group-hover:shadow-primary/5">
                         {artwork ? (
-                          <img
-                            src={`appfile://${artwork.replace(/\\/g, '/')}`}
+                          <ArtworkImage
+                            filePath={artwork}
                             alt={group.name}
                             className="w-full h-full object-cover"
                           />
@@ -360,8 +370,8 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                         <div className="flex items-center gap-4 p-4 rounded-2xl bg-card border border-border/50 transition-all duration-300 group-hover:border-primary/30 group-hover:shadow-lg">
                           <div className="relative w-16 h-16 rounded-xl overflow-hidden bg-muted flex-shrink-0">
                             {artwork ? (
-                              <img
-                                src={`appfile://${artwork.replace(/\\/g, '/')}`}
+                              <ArtworkImage
+                                filePath={artwork}
                                 alt={group.name}
                                 className="w-full h-full object-cover"
                               />
@@ -513,9 +523,9 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                     onClick={handleSelectArtwork}
                     className="w-32 h-32 rounded-xl overflow-hidden border-2 border-dashed border-border hover:border-primary/50 transition-colors flex-shrink-0 group"
                   >
-                    {formData.artworkPath ? (
+                    {formArtworkUrl ? (
                       <img
-                        src={`appfile://${formData.artworkPath.replace(/\\/g, '/')}`}
+                        src={formArtworkUrl}
                         alt="Artwork"
                         className="w-full h-full object-cover"
                       />
@@ -577,8 +587,8 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                               className="gap-1 pr-1 py-1"
                             >
                               {project.artworkPath && (
-                                <img
-                                  src={`appfile://${project.artworkPath.replace(/\\/g, '/')}`}
+                                <ArtworkImage
+                                  filePath={project.artworkPath}
                                   alt=""
                                   className="w-4 h-4 rounded object-cover"
                                 />
@@ -724,8 +734,8 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                               {/* Artwork */}
                               <div className="aspect-square bg-muted relative overflow-hidden">
                                 {project.artworkPath ? (
-                                  <img
-                                    src={`appfile://${project.artworkPath.replace(/\\/g, '/')}`}
+                                  <ArtworkImage
+                                    filePath={project.artworkPath}
                                     alt={project.title}
                                     className={cn(
                                       "w-full h-full object-cover transition-transform duration-200",
@@ -787,6 +797,19 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                                   {project.bpm > 0 && project.musicalKey && project.musicalKey !== 'None' && <span>•</span>}
                                   {project.musicalKey && project.musicalKey !== 'None' && <span>{project.musicalKey}</span>}
                                 </div>
+                                {(project.genre || project.artists) && (
+                                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground truncate">
+                                    {project.artists && (
+                                      <span className="truncate">{project.artists}</span>
+                                    )}
+                                    {project.artists && project.genre && (
+                                      <span className="text-muted-foreground/50">|</span>
+                                    )}
+                                    {project.genre && (
+                                      <span className="truncate">{project.genre}</span>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             </motion.div>
                           );

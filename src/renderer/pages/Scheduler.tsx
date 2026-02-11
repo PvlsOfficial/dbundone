@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback, memo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Plus, 
@@ -85,6 +85,14 @@ import {
   DropdownMenuLabel,
 } from '@/components/ui/dropdown-menu';
 import { cn, formatTimeSpent } from '@/lib/utils';
+import { useImageUrl } from '@/hooks/useImageUrl';
+
+function ArtworkImage({ filePath, alt, className, isVisible = true }: { filePath: string | null | undefined, alt: string, className?: string, isVisible?: boolean }) {
+  // Only trigger Tauri IPC image load when the card is visible
+  const url = useImageUrl(isVisible ? filePath : null)
+  if (!url) return null
+  return <img src={url} alt={alt} className={className} loading="lazy" decoding="async" />
+}
 
 interface ProjectColumn {
   id: ProjectStatus;
@@ -95,21 +103,21 @@ interface ProjectColumn {
 }
 
 const PROJECT_COLUMNS: ProjectColumn[] = [
-  { id: 'idea', title: 'Ideas', icon: <Lightbulb className="w-4 h-4" />, color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
-  { id: 'in-progress', title: 'In Progress', icon: <Music className="w-4 h-4" />, color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
-  { id: 'mixing', title: 'Mixing', icon: <Headphones className="w-4 h-4" />, color: 'text-orange-400', bgColor: 'bg-orange-500/10' },
-  { id: 'mastering', title: 'Mastering', icon: <Disc3 className="w-4 h-4" />, color: 'text-cyan-400', bgColor: 'bg-cyan-500/10' },
-  { id: 'completed', title: 'Completed', icon: <CheckCircle2 className="w-4 h-4" />, color: 'text-green-400', bgColor: 'bg-green-500/10' },
-  { id: 'released', title: 'Released', icon: <PartyPopper className="w-4 h-4" />, color: 'text-pink-400', bgColor: 'bg-pink-500/10' },
-  { id: 'archived', title: 'Archived', icon: <Archive className="w-4 h-4" />, color: 'text-gray-400', bgColor: 'bg-gray-500/10' },
+  { id: 'idea', title: 'Ideas', icon: <Lightbulb className="w-4 h-4" />, color: 'text-purple-600 dark:text-purple-400', bgColor: 'bg-purple-500/15 dark:bg-purple-500/10' },
+  { id: 'in-progress', title: 'In Progress', icon: <Music className="w-4 h-4" />, color: 'text-blue-600 dark:text-blue-400', bgColor: 'bg-blue-500/15 dark:bg-blue-500/10' },
+  { id: 'mixing', title: 'Mixing', icon: <Headphones className="w-4 h-4" />, color: 'text-orange-600 dark:text-orange-400', bgColor: 'bg-orange-500/15 dark:bg-orange-500/10' },
+  { id: 'mastering', title: 'Mastering', icon: <Disc3 className="w-4 h-4" />, color: 'text-cyan-600 dark:text-cyan-400', bgColor: 'bg-cyan-500/15 dark:bg-cyan-500/10' },
+  { id: 'completed', title: 'Completed', icon: <CheckCircle2 className="w-4 h-4" />, color: 'text-green-600 dark:text-green-400', bgColor: 'bg-green-500/15 dark:bg-green-500/10' },
+  { id: 'released', title: 'Released', icon: <PartyPopper className="w-4 h-4" />, color: 'text-pink-600 dark:text-pink-400', bgColor: 'bg-pink-500/15 dark:bg-pink-500/10' },
+  { id: 'archived', title: 'Archived', icon: <Archive className="w-4 h-4" />, color: 'text-gray-600 dark:text-gray-400', bgColor: 'bg-gray-500/15 dark:bg-gray-500/10' },
 ];
 
 // Pro features constants
 const PRIORITY_CONFIG = {
-  low: { label: 'Low', color: 'text-gray-500', bgColor: 'bg-gray-500/10', icon: <Flag className="w-3 h-3" /> },
-  medium: { label: 'Medium', color: 'text-yellow-500', bgColor: 'bg-yellow-500/10', icon: <Flag className="w-3 h-3" /> },
-  high: { label: 'High', color: 'text-orange-500', bgColor: 'bg-orange-500/10', icon: <Flag className="w-3 h-3" /> },
-  urgent: { label: 'Urgent', color: 'text-red-500', bgColor: 'bg-red-500/10', icon: <AlertTriangle className="w-3 h-3" /> },
+  low: { label: 'Low', color: 'text-gray-600 dark:text-gray-500', bgColor: 'bg-gray-500/15 dark:bg-gray-500/10', icon: <Flag className="w-3 h-3" /> },
+  medium: { label: 'Medium', color: 'text-yellow-600 dark:text-yellow-500', bgColor: 'bg-yellow-500/15 dark:bg-yellow-500/10', icon: <Flag className="w-3 h-3" /> },
+  high: { label: 'High', color: 'text-orange-600 dark:text-orange-500', bgColor: 'bg-orange-500/15 dark:bg-orange-500/10', icon: <Flag className="w-3 h-3" /> },
+  urgent: { label: 'Urgent', color: 'text-red-600 dark:text-red-500', bgColor: 'bg-red-500/15 dark:bg-red-500/10', icon: <AlertTriangle className="w-3 h-3" /> },
 };
 
 const DEFAULT_ASSIGNEES = ['You', 'Producer', 'Engineer', 'Artist', 'Manager'];
@@ -123,22 +131,338 @@ interface SchedulerProps {
   onOpenProject: (project: Project) => void;
 }
 
+/**
+ * Shared refs that BoardCard reads via ref instead of props.
+ * This avoids passing fast-changing global state as props to every card,
+ * which would defeat React.memo for all 2500 cards.
+ */
+interface BoardSharedState {
+  selectedProjects: Set<string>;
+  isDragging: boolean;
+  draggedProjectIds: Set<string>;
+  bulkEditMode: boolean;
+  onDragStart: (project: Project, e: React.DragEvent) => void;
+  onDragEnd: () => void;
+  onClick: (project: Project, e: React.MouseEvent) => void;
+  onContextMenu: (project: Project, e: React.MouseEvent) => void;
+  onEdit: (project: Project) => void;
+}
+
+/**
+ * Memoized board card. Only re-renders when project data or its own
+ * selection state changes. Global drag/selection state is read from
+ * a shared ref so it doesn't cause re-renders.
+ */
+interface BoardCardProps {
+  project: Project;
+  isSelected: boolean;
+  observer: IntersectionObserver | null;
+  sharedRef: React.RefObject<BoardSharedState>;
+}
+
+/**
+ * Windowed column renderer. Only mounts BoardCard components that are
+ * visible in the scroll viewport + overscan. This is the key to making
+ * 2500 projects load instantly — we only ever mount ~20-30 cards at a time
+ * per column instead of hundreds.
+ */
+const VirtualizedColumn = memo(({
+  projects,
+  selectedProjects,
+  observer,
+  sharedRef,
+  itemHeight,
+  overscan,
+}: {
+  projects: Project[];
+  selectedProjects: Set<string>;
+  observer: IntersectionObserver | null;
+  sharedRef: React.RefObject<BoardSharedState>;
+  itemHeight: number;
+  overscan: number;
+}) => {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(0);
+
+  // Measure container height once and on resize
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const measure = () => setContainerHeight(el.clientHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+  }, []);
+
+  const totalHeight = projects.length * itemHeight;
+  const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
+  const endIndex = Math.min(
+    projects.length,
+    Math.ceil((scrollTop + containerHeight) / itemHeight) + overscan
+  );
+  const topPad = startIndex * itemHeight;
+  const bottomPad = Math.max(0, totalHeight - endIndex * itemHeight);
+
+  const visibleProjects = projects.slice(startIndex, endIndex);
+
+  return (
+    <div
+      ref={scrollRef}
+      className="flex-1 overflow-y-auto overflow-x-hidden p-2"
+      onScroll={handleScroll}
+    >
+      {projects.length === 0 ? (
+        <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
+          Drag projects here
+        </div>
+      ) : (
+        <>
+          {topPad > 0 && <div style={{ height: topPad }} aria-hidden />}
+          <div className="space-y-2">
+            {visibleProjects.map((project) => (
+              <BoardCard
+                key={project.id}
+                project={project}
+                isSelected={selectedProjects.has(project.id)}
+                observer={observer}
+                sharedRef={sharedRef}
+              />
+            ))}
+          </div>
+          {bottomPad > 0 && <div style={{ height: bottomPad }} aria-hidden />}
+        </>
+      )}
+    </div>
+  );
+});
+
+const BoardCard = memo(({ project, isSelected, observer, sharedRef }: BoardCardProps) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !observer) return;
+    (el as any).__setVisible = setIsVisible;
+    observer.observe(el);
+    return () => {
+      observer.unobserve(el);
+      delete (el as any).__setVisible;
+    };
+  }, [observer]);
+
+  // Read shared state from ref (doesn't trigger re-renders)
+  const shared = sharedRef.current!;
+
+  return (
+    <div
+      ref={ref}
+      draggable
+      onDragStart={(e) => shared.onDragStart(project, e)}
+      onDragEnd={() => shared.onDragEnd()}
+    >
+      <div
+        onClick={(e) => shared.onClick(project, e)}
+        onContextMenu={(e) => shared.onContextMenu(project, e)}
+        className={cn(
+          "group relative p-4 rounded-lg border-2 bg-card/80 cursor-grab active:cursor-grabbing w-full select-none",
+          "transition-all duration-150 ease-out",
+          isSelected
+            ? "border-primary/60 bg-primary/5"
+            : "border-transparent hover:border-primary/30 hover:bg-card/90 hover:shadow-md",
+        )}
+      >
+        <div className="flex items-start gap-3">
+          {/* Artwork */}
+          <div className="w-14 h-14 rounded-lg bg-muted overflow-hidden flex-shrink-0 ring-2 ring-transparent group-hover:ring-primary/20 transition-all">
+            {project.artworkPath ? (
+              <ArtworkImage
+                filePath={project.artworkPath}
+                alt={project.title}
+                className="w-full h-full object-cover"
+                isVisible={isVisible}
+              />
+            ) : (
+              <div className="w-full h-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center">
+                <Music2 className="w-6 h-6 text-muted-foreground" />
+              </div>
+            )}
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start justify-between gap-2">
+              <h4 className="font-semibold text-sm truncate group-hover:text-primary transition-colors">
+                {project.title}
+              </h4>
+              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    shared.onEdit(project);
+                  }}
+                >
+                  <Edit3 className="w-3 h-3" />
+                </Button>
+              </div>
+            </div>
+
+            {/* Project Meta */}
+            <div className="flex items-center gap-2 mt-1">
+              {project.bpm > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  {project.bpm} BPM
+                </span>
+              )}
+              {project.musicalKey && (
+                <>
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-xs text-muted-foreground">
+                    {project.musicalKey}
+                  </span>
+                </>
+              )}
+              {(project.timeSpent ?? 0) > 0 && (
+                <>
+                  <span className="text-muted-foreground">•</span>
+                  <span className="text-xs text-muted-foreground flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    {formatTimeSpent(project.timeSpent || 0)}
+                  </span>
+                </>
+              )}
+            </div>
+
+            {/* Genre & Artist */}
+            {(project.genre || project.artists) && (
+              <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground truncate">
+                {project.artists && (
+                  <span className="truncate">{project.artists}</span>
+                )}
+                {project.artists && project.genre && (
+                  <span className="text-muted-foreground/50">|</span>
+                )}
+                {project.genre && (
+                  <span className="truncate">{project.genre}</span>
+                )}
+              </div>
+            )}
+
+            {/* Tags and DAW */}
+            <div className="flex items-center gap-1 mt-2">
+              {project.dawType && (
+                <Badge variant="outline" className="text-xs px-1.5 py-0.5">
+                  {project.dawType}
+                </Badge>
+              )}
+              {project.tags && project.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {project.tags.slice(0, 2).map((tag) => (
+                    <Badge key={tag} variant="secondary" className="text-xs px-1.5 py-0.5">
+                      {tag}
+                    </Badge>
+                  ))}
+                  {project.tags.length > 2 && (
+                    <Badge variant="secondary" className="text-xs px-1.5 py-0.5">
+                      +{project.tags.length - 2}
+                    </Badge>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}, (prev, next) => {
+  // Only re-render when project data or selection state changes.
+  // Shared ref, observer, and callbacks never cause re-renders.
+  return (
+    prev.project === next.project &&
+    prev.isSelected === next.isSelected &&
+    prev.observer === next.observer
+  );
+});
+
 export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, settings, tags, onCreateTag, onOpenProject }) => {
-  // Get all unique tags from projects
-  const getAllProjectTags = (): string[] => {
+  // Memoized unique values from projects
+  const allProjectTags = useMemo(() => {
     const tagSet = new Set<string>();
     projects.forEach(project => {
       project.tags?.forEach(tag => tagSet.add(tag));
     });
     return Array.from(tagSet).sort();
-  };
+  }, [projects]);
+
+  const allProjectGenres = useMemo(() => {
+    const genreSet = new Set<string>();
+    projects.forEach(project => {
+      if (project.genre) genreSet.add(project.genre);
+    });
+    return Array.from(genreSet).sort();
+  }, [projects]);
+
+  const allProjectArtists = useMemo(() => {
+    const artistSet = new Set<string>();
+    projects.forEach(project => {
+      if (project.artists) artistSet.add(project.artists);
+    });
+    return Array.from(artistSet).sort();
+  }, [projects]);
+
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
 
-  // Project filters
+  // Project filters — debounced search
+  const [searchInput, setSearchInput] = useState('');
   const [projectSearchQuery, setProjectSearchQuery] = useState('');
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      setProjectSearchQuery(value);
+    }, 200);
+  }, []);
+
+  useEffect(() => {
+    return () => { if (searchTimerRef.current) clearTimeout(searchTimerRef.current); };
+  }, []);
+  // Shared IntersectionObserver for lazy image loading on board cards
+  const [boardObserver, setBoardObserver] = useState<IntersectionObserver | null>(null);
+  useEffect(() => {
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const setVisible = (entry.target as any).__setVisible as
+            | React.Dispatch<React.SetStateAction<boolean>>
+            | undefined;
+          if (setVisible) {
+            setVisible(entry.isIntersecting);
+          }
+        }
+      },
+      { rootMargin: '600px 0px', threshold: 0 }
+    );
+    setBoardObserver(io);
+    return () => io.disconnect();
+  }, []);
+
   const [projectDawFilter, setProjectDawFilter] = useState<string[]>([]);
   const [projectTagFilter, setProjectTagFilter] = useState<string[]>([]);
   const [projectStatusFilter, setProjectStatusFilter] = useState<ProjectStatus[]>([]);
+  const [projectGenreFilter, setProjectGenreFilter] = useState<string[]>([]);
+  const [projectArtistFilter, setProjectArtistFilter] = useState<string[]>([]);
   const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
   const [bulkEditMode, setBulkEditMode] = useState(false);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
@@ -228,6 +552,20 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
       );
     }
 
+    // Genre filter
+    if (projectGenreFilter.length > 0) {
+      filteredProjects = filteredProjects.filter(project =>
+        project.genre && projectGenreFilter.includes(project.genre)
+      );
+    }
+
+    // Artist filter
+    if (projectArtistFilter.length > 0) {
+      filteredProjects = filteredProjects.filter(project =>
+        project.artists && projectArtistFilter.includes(project.artists)
+      );
+    }
+
     // Sorting
     filteredProjects.sort((a, b) => {
       let aValue: any, bValue: any;
@@ -286,7 +624,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
     });
     
     return grouped;
-  }, [projects, projectSearchQuery, projectDawFilter, projectTagFilter, projectStatusFilter, showArchivedProjects, projectSortBy, projectSortOrder]);
+  }, [projects, projectSearchQuery, projectDawFilter, projectTagFilter, projectStatusFilter, projectGenreFilter, projectArtistFilter, showArchivedProjects, projectSortBy, projectSortOrder]);
 
   // Project handlers
   const handleCreateProject = () => {
@@ -301,10 +639,9 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
     });
   };
 
-  const handleEditProject = (project: Project) => {
-    // Open full project detail page for editing
+  const handleEditProject = useCallback((project: Project) => {
     onOpenProject(project);
-  };
+  }, [onOpenProject]);
 
   const handleSaveProject = async () => {
     if (!projectFormData.title.trim()) return;
@@ -363,6 +700,81 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
   const [isDragging, setIsDragging] = useState(false);
   const [draggedProjectIds, setDraggedProjectIds] = useState<Set<string>>(new Set());
 
+  // Shared ref for BoardCard — holds fast-changing state and callbacks.
+  // Cards read from this ref at event time, so changes never trigger re-renders.
+  const boardSharedRef = useRef<BoardSharedState>(null!) as React.MutableRefObject<BoardSharedState>;
+  if (!boardSharedRef.current) {
+    boardSharedRef.current = {
+      selectedProjects, isDragging, draggedProjectIds, bulkEditMode,
+      onDragStart: () => {}, onDragEnd: () => {},
+      onClick: () => {}, onContextMenu: () => {}, onEdit: () => {},
+    };
+  }
+  // Sync ref on every render (cheap, no state change)
+  boardSharedRef.current.selectedProjects = selectedProjects;
+  boardSharedRef.current.isDragging = isDragging;
+  boardSharedRef.current.draggedProjectIds = draggedProjectIds;
+  boardSharedRef.current.bulkEditMode = bulkEditMode;
+  boardSharedRef.current.onEdit = handleEditProject;
+  boardSharedRef.current.onDragEnd = () => {
+    setIsDragging(false);
+    setDraggedProjectIds(new Set());
+  };
+  boardSharedRef.current.onClick = (project: Project, e: React.MouseEvent) => {
+    if (e.ctrlKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!bulkEditMode) setBulkEditMode(true);
+      setSelectedProjects(prev => {
+        const newSet = new Set(prev);
+        if (newSet.has(project.id)) newSet.delete(project.id);
+        else newSet.add(project.id);
+        return newSet;
+      });
+      return;
+    }
+    if (bulkEditMode) {
+      e.preventDefault();
+      e.stopPropagation();
+      setSelectedProjects(prev => {
+        const newSet = new Set(prev);
+        if (newSet.has(project.id)) newSet.delete(project.id);
+        else newSet.add(project.id);
+        return newSet;
+      });
+    }
+  };
+  boardSharedRef.current.onContextMenu = (project: Project, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, project });
+  };
+  boardSharedRef.current.onDragStart = (project: Project, e: React.DragEvent) => {
+    let projectIds: Set<string>;
+    if (selectedProjects.has(project.id) && selectedProjects.size > 1) {
+      projectIds = new Set(selectedProjects);
+    } else {
+      projectIds = new Set([project.id]);
+      if (!selectedProjects.has(project.id)) {
+        setSelectedProjects(new Set([project.id]));
+      }
+    }
+    setDraggedProjectIds(projectIds);
+    setIsDragging(true);
+    e.dataTransfer.setData('text/plain', JSON.stringify(Array.from(projectIds)));
+    e.dataTransfer.effectAllowed = 'move';
+    const dragCount = projectIds.size;
+    if (dragCount > 1) {
+      const dragPreview = document.createElement('div');
+      dragPreview.className = 'fixed pointer-events-none z-[9999] px-3 py-2 bg-primary text-primary-foreground rounded-lg shadow-lg font-medium text-sm flex items-center gap-2';
+      dragPreview.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg> Moving ${dragCount} projects`;
+      dragPreview.style.transform = 'translate(-50%, -50%)';
+      document.body.appendChild(dragPreview);
+      e.dataTransfer.setDragImage(dragPreview, 75, 20);
+      setTimeout(() => { document.body.removeChild(dragPreview); }, 0);
+    }
+  };
+
   // Auto-scroll during drag
   const startAutoScroll = useCallback((direction: 'left' | 'right') => {
     if (autoScrollIntervalRef.current) return;
@@ -385,6 +797,10 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
 
   // Handle drag over for auto-scroll
   const handleKanbanDragOver = useCallback((e: React.DragEvent) => {
+    // Must preventDefault on dragover to allow drops anywhere on the board
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    
     if (!isDragging || !kanbanBoardRef.current) return;
     
     const rect = kanbanBoardRef.current.getBoundingClientRect();
@@ -407,50 +823,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
     }
   }, [isDragging, stopAutoScroll]);
 
-  // Project drag handlers
-  const handleProjectDragStart = (project: Project, e: React.DragEvent) => {
-    // If the dragged project is already selected, drag all selected items
-    // Otherwise, just drag this single project
-    if (selectedProjects.has(project.id) && selectedProjects.size > 1) {
-      setDraggedProjectIds(new Set(selectedProjects));
-    } else {
-      setDraggedProjectIds(new Set([project.id]));
-      // Also update selection to just this project if not already selected
-      if (!selectedProjects.has(project.id)) {
-        setSelectedProjects(new Set([project.id]));
-      }
-    }
-    
-    setIsDragging(true);
-    
-    // Create a custom drag image showing count
-    const dragCount = selectedProjects.has(project.id) && selectedProjects.size > 1 
-      ? selectedProjects.size 
-      : 1;
-    
-    if (dragCount > 1) {
-      // Create a custom drag preview element
-      const dragPreview = document.createElement('div');
-      dragPreview.className = 'fixed pointer-events-none z-[9999] px-3 py-2 bg-primary text-primary-foreground rounded-lg shadow-lg font-medium text-sm flex items-center gap-2';
-      dragPreview.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg> Moving ${dragCount} projects`;
-      dragPreview.style.transform = 'translate(-50%, -50%)';
-      document.body.appendChild(dragPreview);
-      
-      e.dataTransfer.setDragImage(dragPreview, 75, 20);
-      
-      // Remove the element after a short delay
-      setTimeout(() => {
-        document.body.removeChild(dragPreview);
-      }, 0);
-    }
-    
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const handleProjectDragEnd = () => {
-    setIsDragging(false);
-    setDraggedProjectIds(new Set());
-  };
+  // handleProjectDragStart and handleProjectDragEnd are on boardSharedRef.current
 
   const handleProjectDragOver = (e: React.DragEvent, columnId: ProjectStatus) => {
     e.preventDefault();
@@ -458,8 +831,13 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
     setDragOverColumn(columnId);
   };
 
-  const handleProjectDragLeave = () => {
-    setDragOverColumn(null);
+  const handleProjectDragLeave = (e: React.DragEvent) => {
+    // Only clear if we're actually leaving the column, not moving to a child element
+    const currentTarget = e.currentTarget as HTMLElement;
+    const relatedTarget = e.relatedTarget as HTMLElement | null;
+    if (!relatedTarget || !currentTarget.contains(relatedTarget)) {
+      setDragOverColumn(null);
+    }
   };
 
   const handleProjectDrop = async (e: React.DragEvent, targetStatus: ProjectStatus) => {
@@ -467,7 +845,21 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
     setDragOverColumn(null);
     setIsDragging(false);
 
-    const projectsToMove = draggedProjectIds.size > 0 ? draggedProjectIds : selectedProjects;
+    let projectsToMove = draggedProjectIds.size > 0 ? draggedProjectIds : selectedProjects;
+    
+    // Fallback: read from dataTransfer if state is empty
+    if (projectsToMove.size === 0) {
+      try {
+        const data = e.dataTransfer.getData('text/plain');
+        if (data) {
+          const ids = JSON.parse(data) as string[];
+          projectsToMove = new Set(ids);
+        }
+      } catch {
+        // ignore parse errors
+      }
+    }
+    
     if (projectsToMove.size === 0) return;
 
     try {
@@ -502,9 +894,9 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 flex flex-col overflow-hidden">
         {/* Projects Kanban Board */}
-        <div className="flex flex-col">
+        <div className="flex-1 flex flex-col overflow-hidden">
           {/* Projects Header */}
           <motion.div
             initial={{ opacity: 0, y: -20 }}
@@ -544,13 +936,17 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input
                   placeholder="Search projects..."
-                  value={projectSearchQuery}
-                  onChange={(e) => setProjectSearchQuery(e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => handleSearchChange(e.target.value)}
                   className="pl-9 bg-muted/30"
                 />
-                {projectSearchQuery && (
+                {searchInput && (
                   <button
-                    onClick={() => setProjectSearchQuery('')}
+                    onClick={() => {
+                      setSearchInput('');
+                      setProjectSearchQuery('');
+                      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+                    }}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   >
                     <X className="w-4 h-4" />
@@ -680,11 +1076,11 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                     </div>
 
                     {/* Tags Filter */}
-                    {getAllProjectTags().length > 0 && (
+                    {allProjectTags.length > 0 && (
                       <div className="space-y-2">
                         <label className="text-sm font-medium text-foreground">Tags</label>
                         <div className="flex flex-wrap gap-2">
-                          {getAllProjectTags().map((tag) => (
+                          {allProjectTags.map((tag) => (
                             <button
                               key={tag}
                               onClick={() => {
@@ -737,14 +1133,74 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                       </div>
                     )}
 
+                    {/* Genre Filter */}
+                    {allProjectGenres.length > 0 && (
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-foreground">Genre</label>
+                        <div className="flex flex-wrap gap-2">
+                          {allProjectGenres.map((genre) => (
+                            <button
+                              key={genre}
+                              onClick={() => {
+                                if (projectGenreFilter.includes(genre)) {
+                                  setProjectGenreFilter(projectGenreFilter.filter(g => g !== genre));
+                                } else {
+                                  setProjectGenreFilter([...projectGenreFilter, genre]);
+                                }
+                              }}
+                              className={cn(
+                                "px-3 py-1.5 rounded-full text-sm font-medium transition-all",
+                                projectGenreFilter.includes(genre)
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                              )}
+                            >
+                              {genre}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Artist Filter */}
+                    {allProjectArtists.length > 0 && (
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-foreground">Artist</label>
+                        <div className="flex flex-wrap gap-2">
+                          {allProjectArtists.map((artist) => (
+                            <button
+                              key={artist}
+                              onClick={() => {
+                                if (projectArtistFilter.includes(artist)) {
+                                  setProjectArtistFilter(projectArtistFilter.filter(a => a !== artist));
+                                } else {
+                                  setProjectArtistFilter([...projectArtistFilter, artist]);
+                                }
+                              }}
+                              className={cn(
+                                "px-3 py-1.5 rounded-full text-sm font-medium transition-all",
+                                projectArtistFilter.includes(artist)
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                              )}
+                            >
+                              {artist}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Clear All Filters */}
-                    {(projectStatusFilter.length > 0 || projectTagFilter.length > 0 || projectDawFilter.length > 0) && (
+                    {(projectStatusFilter.length > 0 || projectTagFilter.length > 0 || projectDawFilter.length > 0 || projectGenreFilter.length > 0 || projectArtistFilter.length > 0) && (
                       <div className="pt-2">
                         <button
                           onClick={() => {
                             setProjectStatusFilter([]);
                             setProjectTagFilter([]);
                             setProjectDawFilter([]);
+                            setProjectGenreFilter([]);
+                            setProjectArtistFilter([]);
                           }}
                           className="px-3 py-1.5 rounded-full text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors"
                         >
@@ -763,7 +1219,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
             <motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="px-6 py-3 border-b border-border/30 bg-muted/30"
+              className="px-6 py-3 border-b border-border/30 bg-background/95 backdrop-blur-sm sticky top-0 z-20"
             >
               <div className="flex items-center gap-3">
                 <span className="text-sm font-medium">
@@ -848,18 +1304,18 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
           {/* Project Columns */}
             <div 
               ref={kanbanBoardRef}
-              className="flex-1 p-6 overflow-x-auto overflow-y-auto" 
+              className="flex-1 p-6 overflow-x-auto overflow-y-hidden" 
               onClick={() => setSelectedProjects(new Set())}
               onDragOver={handleKanbanDragOver}
               onDragLeave={stopAutoScroll}
-              onDrop={stopAutoScroll}
+              onDrop={(e) => { e.preventDefault(); stopAutoScroll(); }}
             >
-              <div className="flex gap-4 min-w-max pb-4">
+              <div className="flex gap-4 min-w-max pb-4 h-full">
                 {PROJECT_COLUMNS.filter(column => column.id !== 'archived' || showArchivedProjects).map((column) => (
                   <div
                     key={column.id}
                     className={cn(
-                      "w-[320px] flex flex-col rounded-xl border transition-all duration-200",
+                      "w-[320px] flex flex-col rounded-xl border transition-all duration-200 h-full",
                       dragOverColumn === column.id
                         ? "border-primary/50 bg-primary/5"
                         : "border-border/30 bg-card/30"
@@ -868,7 +1324,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                       touchAction: 'pan-y'
                     }}
                     onDragOver={(e) => handleProjectDragOver(e, column.id)}
-                    onDragLeave={handleProjectDragLeave}
+                    onDragLeave={(e) => handleProjectDragLeave(e)}
                     onDrop={(e) => handleProjectDrop(e, column.id)}
                   >
                     {/* Column Header */}
@@ -904,182 +1360,15 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                       </div>
                     </div>
 
-                    {/* Project Cards */}
-                    <div 
-                      className="flex-1"
-                    >
-                      <div className="p-2 space-y-2">
-                        <AnimatePresence>
-                          {projectsByStatus[column.id].map((project) => {
-                            const isBeingDragged = isDragging && draggedProjectIds.has(project.id);
-                            const isPartOfDragGroup = isDragging && selectedProjects.has(project.id) && draggedProjectIds.size > 1;
-                            
-                            return (
-                              <motion.div
-                                key={project.id}
-                                exit={{ opacity: 0, scale: 0.95 }}
-                                draggable={true}
-                                onClick={(e) => {
-                                  // Ctrl+click to toggle selection
-                                  if (e.ctrlKey) {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    // Enter bulk mode if not already
-                                    if (!bulkEditMode) {
-                                      setBulkEditMode(true);
-                                    }
-                                    // Toggle this project's selection
-                                    setSelectedProjects(prev => {
-                                      const newSet = new Set(prev);
-                                      if (newSet.has(project.id)) {
-                                        newSet.delete(project.id);
-                                      } else {
-                                        newSet.add(project.id);
-                                      }
-                                      return newSet;
-                                    });
-                                    return;
-                                  }
-                                  // In bulk edit mode, regular click toggles selection
-                                  if (bulkEditMode) {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    setSelectedProjects(prev => {
-                                      const newSet = new Set(prev);
-                                      if (newSet.has(project.id)) {
-                                        newSet.delete(project.id);
-                                      } else {
-                                        newSet.add(project.id);
-                                      }
-                                      return newSet;
-                                    });
-                                  }
-                                }}
-                                onDragStart={(e) => handleProjectDragStart(project, e as unknown as React.DragEvent)}
-                                onDragEnd={handleProjectDragEnd}
-                                onContextMenu={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  setContextMenu({
-                                    x: e.clientX,
-                                    y: e.clientY,
-                                    project: project,
-                                  });
-                                }}
-                                className={cn(
-                                  "group relative p-4 rounded-lg border border-border/30 bg-card/80 cursor-grab active:cursor-grabbing transition-all hover:border-primary/40 hover:bg-card/90 hover:shadow-md w-full select-none",
-                                  selectedProjects.has(project.id) && "ring-2 ring-primary/50 bg-primary/5",
-                                  isBeingDragged && "opacity-50 scale-95",
-                                  isPartOfDragGroup && !isBeingDragged && "opacity-60 ring-2 ring-primary/30"
-                                )}
-                              >
-                                {/* Multi-drag indicator badge */}
-                                {selectedProjects.has(project.id) && selectedProjects.size > 1 && !isDragging && (
-                                  <div className="absolute -top-2 -right-2 z-10 bg-primary text-primary-foreground text-xs font-bold px-2 py-0.5 rounded-full shadow-md">
-                                    {selectedProjects.size}
-                                  </div>
-                                )}
-                                <div className="flex items-start gap-3">
-                                  {/* Artwork */}
-                                  <div className="w-14 h-14 rounded-lg bg-muted overflow-hidden flex-shrink-0 ring-2 ring-transparent group-hover:ring-primary/20 transition-all">
-                                    {project.artworkPath ? (
-                                      <img
-                                        src={`appfile://${project.artworkPath.replace(/\\/g, "/")}`}
-                                        alt={project.title}
-                                        className="w-full h-full object-cover"
-                                      />
-                                    ) : (
-                                      <div className="w-full h-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center">
-                                        <Music2 className="w-6 h-6 text-muted-foreground" />
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  {/* Content */}
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-start justify-between gap-2">
-                                      <h4 className="font-semibold text-sm truncate group-hover:text-primary transition-colors">
-                                        {project.title}
-                                      </h4>
-                                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          className="h-6 w-6"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleEditProject(project);
-                                          }}
-                                        >
-                                          <Edit3 className="w-3 h-3" />
-                                        </Button>
-                                      </div>
-                                    </div>
-
-                                    {/* Project Meta */}
-                                    <div className="flex items-center gap-2 mt-1">
-                                      {project.bpm > 0 && (
-                                        <span className="text-xs text-muted-foreground">
-                                          {project.bpm} BPM
-                                        </span>
-                                      )}
-                                      {project.musicalKey && (
-                                        <>
-                                          <span className="text-muted-foreground">•</span>
-                                          <span className="text-xs text-muted-foreground">
-                                            {project.musicalKey}
-                                          </span>
-                                        </>
-                                      )}
-                                      {(project.timeSpent ?? 0) > 0 && (
-                                        <>
-                                          <span className="text-muted-foreground">•</span>
-                                          <span className="text-xs text-muted-foreground flex items-center gap-1">
-                                            <Clock className="w-3 h-3" />
-                                            {formatTimeSpent(project.timeSpent || 0)}
-                                          </span>
-                                        </>
-                                      )}
-                                    </div>
-
-                                    {/* Progress Bar */}
-
-                                    {/* Tags and DAW */}
-                                    <div className="flex items-center gap-1 mt-2">
-                                      {project.dawType && (
-                                        <Badge variant="outline" className="text-xs px-1.5 py-0.5">
-                                          {project.dawType}
-                                        </Badge>
-                                      )}
-                                      {project.tags && project.tags.length > 0 && (
-                                        <div className="flex flex-wrap gap-1">
-                                          {project.tags.slice(0, 2).map((tag) => (
-                                            <Badge key={tag} variant="secondary" className="text-xs px-1.5 py-0.5">
-                                              {tag}
-                                            </Badge>
-                                          ))}
-                                          {project.tags.length > 2 && (
-                                            <Badge variant="secondary" className="text-xs px-1.5 py-0.5">
-                                              +{project.tags.length - 2}
-                                            </Badge>
-                                          )}
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
-                              </motion.div>
-                            );
-                          })}
-                        </AnimatePresence>
-
-                        {projectsByStatus[column.id].length === 0 && (
-                          <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
-                            Drag projects here
-                          </div>
-                        )}
-                      </div>
-                    </div>
+                    {/* Project Cards — virtualized */}
+                    <VirtualizedColumn
+                      projects={projectsByStatus[column.id]}
+                      selectedProjects={selectedProjects}
+                      observer={boardObserver}
+                      sharedRef={boardSharedRef}
+                      itemHeight={108}
+                      overscan={5}
+                    />
                   </div>
                 ))}
               </div>

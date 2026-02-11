@@ -1,4 +1,4 @@
-import { Project, ProjectGroup, Task, Tag, AppSettings, AudioVersion, Annotation } from '@shared/types';
+import { Project, ProjectGroup, Task, Tag, AppSettings, AudioVersion, Annotation, ArtworkHistoryEntry } from '@shared/types';
 
 declare global {
   interface Window {
@@ -61,12 +61,11 @@ declare global {
       readDir: (folderPath: string) => Promise<string[]>;
       detectProjects: (folderPath: string) => Promise<{ hasFLP: boolean; hasALS: boolean }>;
       loadAudioFile: (filePath: string) => Promise<ArrayBuffer>;
+      computeAudioPeaks: (filePath: string, numPeaks?: number) => Promise<number[]>;
+      getCachedPeaks: (filePath: string, numPeaks?: number) => Promise<number[] | null>;
       openInDaw: (filePath: string) => Promise<{ success: boolean; error?: string }>;
       openFolder: (folderPath: string) => Promise<{ success: boolean; error?: string }>;
 
-      // Audio waveform analysis
-      getWaveformPeaks: (filePath: string, numPeaks?: number) => Promise<number[]>;
-      
       // FL Studio scanning
       scanFLStudioFolder: (folderPath: string) => Promise<{ count: number }>;
       // Ableton scanning
@@ -79,6 +78,17 @@ declare global {
 
       // Unsplash random photo
       fetchUnsplashPhoto: (projectId: string) => Promise<string | null>;
+
+      // Batch photo operations
+      batchFetchPhotos: () => Promise<{ success: boolean; added: number; total: number; cancelled: boolean }>;
+      cancelBatchPhotos: () => Promise<boolean>;
+      removeAllArtwork: () => Promise<{ success: boolean; cleared: number; filesDeleted: number }>;
+
+      // Artwork history
+      getArtworkHistory: (projectId: string) => Promise<ArtworkHistoryEntry[]>;
+      addArtworkHistoryEntry: (projectId: string, filePath: string, source: string) => Promise<ArtworkHistoryEntry>;
+      deleteArtworkHistoryEntry: (id: string) => Promise<boolean>;
+      setArtworkFromHistory: (projectId: string, filePath: string) => Promise<Project>;
 
       // FLP metadata extraction (single file)
       extractFlpMetadata: (filePath: string) => Promise<any>;

@@ -18,7 +18,8 @@ import {
   ChevronUp,
   ChevronDown,
 } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn, assetUrl } from "@/lib/utils"
+import { useImageUrl } from "@/hooks/useImageUrl"
 import { Slider, Tooltip, TooltipContent, TooltipTrigger, TooltipProvider, Badge } from "@/components/ui"
 import { AudioPlayerState, Project } from "@shared/types"
 import { useTheme } from "./ThemeProvider"
@@ -45,10 +46,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   onOpenProject,
   onPlayProject,
 }) => {
+  const artworkUrl = useImageUrl(playerState.currentTrack?.artworkPath)
   const audioRef = useRef<HTMLAudioElement | null>(null) // HTML5 Audio fallback
-  const blobUrlRef = useRef<string | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const initialSeekTimeRef = useRef<number>(0) // Track initial seek position for restore
+  const waveformRequestRef = useRef(0)
   const [isReady, setIsReady] = useState(false)
   const [repeatMode, setRepeatMode] = useState<RepeatMode>("off")
   const [isShuffled, setIsShuffled] = useState(false)
@@ -56,6 +58,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const [shuffledQueue, setShuffledQueue] = useState<Project[]>([])
   const [waveformPeaks, setWaveformPeaks] = useState<number[]>([])
   const [waveformLoading, setWaveformLoading] = useState(false)
+  const handleTrackEndRef = useRef<() => void>(() => {})
   const { accentColor } = useTheme()
 
   // Helper to convert hex to rgba
@@ -102,22 +105,16 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     }
   }, [isShuffled, projects, playerState.currentTrack?.id])
 
+  // Cleanup audio element only on unmount
   useEffect(() => {
-    // TEMPORARILY DISABLE WaveSurfer to prevent crashes - using HTML5 Audio fallback
-
     return () => {
-      // Clean up blob URL
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current)
-        blobUrlRef.current = null
-      }
       if (audioRef.current) {
         audioRef.current.pause()
         audioRef.current.src = ''
         audioRef.current = null
       }
     }
-  }, [isExpanded])
+  }, [])
 
   useEffect(() => {
     if (playerState.currentTrack?.audioPreviewPath) {
@@ -129,6 +126,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       // Ensure audio element exists
       if (!audioRef.current) {
         audioRef.current = new Audio()
+        audioRef.current.preload = 'auto'
 
         audioRef.current.addEventListener('loadedmetadata', () => {
           setIsReady(true)
@@ -156,7 +154,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         })
 
         audioRef.current.addEventListener('ended', () => {
-          handleTrackEnd()
+          handleTrackEndRef.current()
         })
 
         audioRef.current.addEventListener('play', () => {
@@ -176,37 +174,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       setIsReady(false)
       const loadAudio = async () => {
         try {
-          // Clean up previous blob URL
-          if (blobUrlRef.current) {
-            URL.revokeObjectURL(blobUrlRef.current)
-            blobUrlRef.current = null
-          }
-
           if (!playerState.currentTrack || !playerState.currentTrack.audioPreviewPath) return
 
-          const arrayBuffer = await window.electron?.loadAudioFile(playerState.currentTrack.audioPreviewPath)
-          if (!arrayBuffer) {
-            throw new Error("Failed to load audio file")
-          }
-
-          // Determine MIME type based on file extension
-          const filePath = playerState.currentTrack.audioPreviewPath.toLowerCase()
-          let mimeType = 'audio/mpeg' // default
-          if (filePath.endsWith('.wav')) {
-            mimeType = '' // Let browser detect for WAV
-          } else if (filePath.endsWith('.flac')) {
-            mimeType = 'audio/flac'
-          } else if (filePath.endsWith('.ogg')) {
-            mimeType = 'audio/ogg'
-          } else if (filePath.endsWith('.m4a') || filePath.endsWith('.aac')) {
-            mimeType = 'audio/mp4'
-          }
-
-          const blob = new Blob([arrayBuffer], mimeType ? { type: mimeType } : {})
-          const blobUrl = URL.createObjectURL(blob)
-          blobUrlRef.current = blobUrl
-
-          audioRef.current!.src = blobUrl
+          // Use Tauri asset protocol URL directly — no IPC or blob needed
+          const audioAssetUrl = assetUrl(playerState.currentTrack.audioPreviewPath)
+          audioRef.current!.src = audioAssetUrl
           audioRef.current!.load()
         } catch (error) {
           console.error("AudioPlayer: Failed to load audio:", error)
@@ -217,27 +189,37 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     }
   }, [playerState.currentTrack?.id])
 
-  // Load waveform peaks when track changes
+  // Load waveform peaks computed server-side in Rust (fast, no large IPC transfer)
   useEffect(() => {
+    if (!playerState.currentTrack?.audioPreviewPath) {
+      setWaveformPeaks([])
+      return
+    }
+
+    const thisRequest = ++waveformRequestRef.current
+    const audioPath = playerState.currentTrack.audioPreviewPath
+    
+    setWaveformLoading(true)
+    setWaveformPeaks([])
+
     const loadWaveform = async () => {
-      if (!playerState.currentTrack?.audioPreviewPath) {
-        setWaveformPeaks([])
-        return
-      }
-      
-      setWaveformLoading(true)
       try {
-        const peaks = await window.electron?.getWaveformPeaks(playerState.currentTrack.audioPreviewPath, 150)
+        const peaks = await window.electron?.computeAudioPeaks(audioPath, 150)
+        if (thisRequest !== waveformRequestRef.current) return
+
         if (peaks && peaks.length > 0) {
           setWaveformPeaks(peaks)
         } else {
           setWaveformPeaks([])
         }
       } catch (error) {
+        if (thisRequest !== waveformRequestRef.current) return
         console.error("Failed to load waveform:", error)
         setWaveformPeaks([])
       } finally {
-        setWaveformLoading(false)
+        if (thisRequest === waveformRequestRef.current) {
+          setWaveformLoading(false)
+        }
       }
     }
     
@@ -328,6 +310,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       }
     }
   }
+
+  // Keep the ref in sync so the 'ended' event listener always calls the latest version
+  useEffect(() => {
+    handleTrackEndRef.current = handleTrackEnd
+  })
 
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60)
@@ -457,7 +444,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
   if (!playerState.currentTrack) return null
 
-  const queue = isShuffled ? shuffledQueue : projects.filter(p => p.audioPreviewPath)
+  const queue = isShuffled ? shuffledQueue : projects.filter(hasPlayableAudio)
   const queueIndex = queue.findIndex(p => p.id === playerState.currentTrack?.id)
 
   return (
@@ -490,9 +477,9 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                 className="relative w-12 h-12 rounded-lg overflow-hidden bg-muted flex-shrink-0 hover:opacity-80 transition-opacity"
                 title="Open project"
               >
-                {playerState.currentTrack.artworkPath ? (
+                {artworkUrl ? (
                   <img
-                    src={`appfile://${playerState.currentTrack.artworkPath.replace(/\\/g, "/")}`}
+                    src={artworkUrl}
                     alt={playerState.currentTrack.title}
                     className="w-full h-full object-cover"
                   />

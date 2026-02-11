@@ -41,7 +41,7 @@
     --muted: 0 0% 96.1%;
     --muted-foreground: 0 0% 45.1%;
     --accent: var(--accent-color);
-    --accent-foreground: 0 0% 100%;
+    --accent-foreground: 0 0% 9%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 0 0% 98%;
     --border: 0 0% 89.8%;
@@ -117,11 +117,11 @@
 
 @layer utilities {
   .glass {
-    @apply bg-white/5 backdrop-blur-xl border border-white/10;
+    @apply bg-black/5 dark:bg-white/5 backdrop-blur-xl border border-black/10 dark:border-white/10;
   }
   
   .glass-dark {
-    @apply bg-black/20 backdrop-blur-xl border border-white/5;
+    @apply bg-black/5 dark:bg-black/20 backdrop-blur-xl border border-black/5 dark:border-white/5;
   }
   
   .glow {
@@ -133,7 +133,7 @@
   }
 
   .text-gradient {
-    @apply bg-gradient-to-r from-violet-400 via-purple-400 to-fuchsia-400 bg-clip-text text-transparent;
+    @apply bg-gradient-to-r from-violet-600 via-purple-600 to-fuchsia-600 dark:from-violet-400 dark:via-purple-400 dark:to-fuchsia-400 bg-clip-text text-transparent;
   }
 
   .bg-noise {
@@ -204,19 +204,19 @@ input[type="number"]::-webkit-inner-spin-button {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e5e7eb;
-  background: white;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
   transition: all 0.2s ease;
 }
 
 .virtual-grid-item:hover {
-  border-color: #d1d5db;
+  border-color: hsl(var(--border));
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .virtual-grid-item.selected {
-  border-color: #3b82f6;
-  background: #eff6ff;
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.05);
 }
 
 .project-cell {
@@ -239,7 +239,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .project-cell-title {
   font-weight: 600;
   font-size: 14px;
-  color: #1f2937;
+  color: hsl(var(--foreground));
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -255,18 +255,18 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 
 .project-cell-status.active {
-  background: #dcfce7;
-  color: #166534;
+  background: hsl(142 76% 90%);
+  color: hsl(143 64% 24%);
 }
 
 .project-cell-status.inactive {
-  background: #fee2e2;
-  color: #991b1b;
+  background: hsl(0 93% 94%);
+  color: hsl(0 74% 42%);
 }
 
 .project-cell-meta {
   font-size: 12px;
-  color: #6b7280;
+  color: hsl(var(--muted-foreground));
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -280,5 +280,5 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .project-cell-date {
   font-size: 11px;
-  color: #9ca3af;
+  color: hsl(var(--muted-foreground));
 }

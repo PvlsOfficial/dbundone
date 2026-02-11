@@ -36,6 +36,8 @@ export const SearchFilter: React.FC<SearchFilterProps> = ({
       collectionFilter: null,
       statusFilter: null,
       dawFilter: null,
+      genreFilter: null,
+      artistFilter: null,
     });
   };
 
