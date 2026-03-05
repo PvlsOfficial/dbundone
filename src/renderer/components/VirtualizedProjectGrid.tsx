@@ -1,12 +1,12 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
-import { Project, Tag, AudioPlayerState, ProjectStatus } from '@shared/types';
+import { Project, Tag, AudioPlayerState, ProjectStatus, PluginSession } from '@shared/types';
 import { ProjectCard } from './ProjectCard';
 
 interface VirtualizedProjectGridProps {
   projects: Project[];
   tags: Tag[];
   playerState: AudioPlayerState;
-  viewMode: 'grid' | 'list';
+  viewMode: 'grid' | 'list' | 'gallery';
   gridSize: 'small' | 'medium' | 'large';
   selectedProjects: Set<string>;
   selectionMode: boolean;
@@ -23,6 +23,8 @@ interface VirtualizedProjectGridProps {
   unsplashEnabled?: boolean;
   aiArtworkEnabled?: boolean;
   onOpenArtworkManager?: (project: Project) => void;
+  pluginSessions?: PluginSession[];
+  shareStatusMap?: Record<string, 'pending' | 'accepted' | 'mixed'>;
 }
 
 // Grid column configuration based on grid size (matches Dashboard.tsx)
@@ -32,10 +34,18 @@ const gridColumns = {
   large: 'grid-cols-1 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5',
 };
 
+// Gallery uses a denser layout — more columns, square cards with no content below
+const galleryColumns = {
+  small: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-7 2xl:grid-cols-9',
+  medium: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7',
+  large: 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6',
+};
+
 // Estimated row heights (card + gap) per grid size for initial render
 const ROW_HEIGHT_ESTIMATES: Record<string, Record<string, number>> = {
   grid: { small: 230, medium: 310, large: 400 },
   list: { small: 90, medium: 90, large: 90 },
+  gallery: { small: 160, medium: 220, large: 300 },
 };
 
 const OVERSCAN_ROWS = 3;
@@ -59,7 +69,7 @@ function getScrollParent(el: HTMLElement): HTMLElement {
   return document.documentElement;
 }
 
-export const VirtualizedProjectGrid: React.FC<VirtualizedProjectGridProps> = ({
+export const VirtualizedProjectGrid = React.memo<VirtualizedProjectGridProps>(({
   projects,
   tags,
   playerState,
@@ -80,6 +90,8 @@ export const VirtualizedProjectGrid: React.FC<VirtualizedProjectGridProps> = ({
   unsplashEnabled,
   aiArtworkEnabled,
   onOpenArtworkManager,
+  pluginSessions,
+  shareStatusMap,
 }) => {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -101,6 +113,7 @@ export const VirtualizedProjectGrid: React.FC<VirtualizedProjectGridProps> = ({
         setColCount(1);
         return;
       }
+      // Gallery & grid both use CSS grid — detect columns from computed style
       const style = getComputedStyle(el);
       const cols = style.gridTemplateColumns.split(' ').filter(s => s.trim()).length;
       if (cols > 0) setColCount(cols);
@@ -136,35 +149,49 @@ export const VirtualizedProjectGrid: React.FC<VirtualizedProjectGridProps> = ({
   }, [viewMode, gridSize, projects.length > 0]);
 
   // Track scroll position and compute our offset within the scroll parent
+  // Throttled with rAF to avoid multiple state updates per frame
   useEffect(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
 
     const scrollParent = getScrollParent(wrapper);
+    let rafId = 0;
+    let scheduled = false;
 
     const update = () => {
       const sp = scrollParent;
       const st = sp.scrollTop;
       const vh = sp.clientHeight;
-      setScrollTop(st);
-      setViewportHeight(vh);
 
       // Our offset: how far the wrapper's top is from the scroll parent's
       // content start. This accounts for headers/filters above us.
-      // Use getBoundingClientRect relative to scroll parent's rect.
       const spRect = sp.getBoundingClientRect();
       const wRect = wrapper.getBoundingClientRect();
-      setOffsetTop(wRect.top - spRect.top + st);
+      const ot = wRect.top - spRect.top + st;
+
+      // Batch all three into a single state update cycle
+      setScrollTop(st);
+      setViewportHeight(vh);
+      setOffsetTop(ot);
+      scheduled = false;
+    };
+
+    const onScroll = () => {
+      if (!scheduled) {
+        scheduled = true;
+        rafId = requestAnimationFrame(update);
+      }
     };
 
     update();
-    scrollParent.addEventListener('scroll', update, { passive: true });
-    const ro = new ResizeObserver(update);
+    scrollParent.addEventListener('scroll', onScroll, { passive: true });
+    const ro = new ResizeObserver(onScroll);
     ro.observe(scrollParent);
     ro.observe(wrapper);
 
     return () => {
-      scrollParent.removeEventListener('scroll', update);
+      cancelAnimationFrame(rafId);
+      scrollParent.removeEventListener('scroll', onScroll);
       ro.disconnect();
     };
   }, []);
@@ -190,6 +217,8 @@ export const VirtualizedProjectGrid: React.FC<VirtualizedProjectGridProps> = ({
 
   const containerClass = viewMode === 'list'
     ? 'flex flex-col gap-3'
+    : viewMode === 'gallery'
+    ? `grid gap-2 ${galleryColumns[gridSize]}`
     : `grid gap-4 ${gridColumns[gridSize]}`;
 
   return (
@@ -224,6 +253,8 @@ export const VirtualizedProjectGrid: React.FC<VirtualizedProjectGridProps> = ({
             unsplashEnabled={unsplashEnabled}
             aiArtworkEnabled={aiArtworkEnabled}
             onOpenArtworkManager={onOpenArtworkManager}
+            pluginSessions={pluginSessions}
+            shareStatus={shareStatusMap?.[project.id]}
           />
         ))}
       </div>
@@ -232,6 +263,6 @@ export const VirtualizedProjectGrid: React.FC<VirtualizedProjectGridProps> = ({
       {bottomPad > 0 && <div style={{ height: bottomPad }} aria-hidden />}
     </div>
   );
-};
+});
 
 export default VirtualizedProjectGrid;

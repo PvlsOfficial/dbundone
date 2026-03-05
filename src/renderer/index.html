@@ -5,8 +5,124 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' ipc: http://ipc.localhost; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https://asset.localhost http://asset.localhost https: data: blob: file: appfile:; media-src 'self' asset: https://asset.localhost http://asset.localhost https: blob: file: appfile:; connect-src 'self' ipc: http://ipc.localhost https: http://127.0.0.1:* http://localhost:* ws://localhost:* ws://127.0.0.1:*;">
     <title>DBundone - Music Project Manager</title>
+    <style>
+      /* ── Splash screen: renders instantly before any JS loads ── */
+      body { margin: 0; background: #0a0a0a; overflow: hidden; }
+      #splash {
+        position: fixed; inset: 0; z-index: 99999;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        background: #0a0a0a;
+        opacity: 1;
+        transition: opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      #splash.fade-out {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #splash .logo-wrap {
+        position: relative;
+        width: 72px; height: 72px;
+        margin-bottom: 28px;
+      }
+      /* Pulsing ring behind logo */
+      #splash .pulse-ring {
+        position: absolute; inset: -16px;
+        border-radius: 50%;
+        border: 1.5px solid rgba(99, 102, 241, 0.25);
+        animation: splash-pulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+      }
+      #splash .pulse-ring:nth-child(2) {
+        inset: -28px;
+        border-color: rgba(99, 102, 241, 0.12);
+        animation-delay: 0.4s;
+      }
+      #splash .pulse-ring:nth-child(3) {
+        inset: -40px;
+        border-color: rgba(99, 102, 241, 0.06);
+        animation-delay: 0.8s;
+      }
+      @keyframes splash-pulse {
+        0%, 100% { transform: scale(0.96); opacity: 0.4; }
+        50% { transform: scale(1.04); opacity: 1; }
+      }
+      /* Logo */
+      #splash .logo-svg {
+        width: 72px; height: 72px;
+        fill: #e1e1e6;
+        filter: drop-shadow(0 0 20px rgba(99, 102, 241, 0.3));
+        animation: splash-logo-in 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+      }
+      @keyframes splash-logo-in {
+        from { opacity: 0; transform: scale(0.8) translateY(8px); }
+        to { opacity: 1; transform: scale(1) translateY(0); }
+      }
+      /* App name */
+      #splash .app-name {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+        font-size: 15px; font-weight: 500; letter-spacing: 3px; text-transform: uppercase;
+        color: rgba(225, 225, 230, 0.7);
+        animation: splash-text-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both;
+      }
+      @keyframes splash-text-in {
+        from { opacity: 0; transform: translateY(6px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      /* Loading bar */
+      #splash .loader-track {
+        width: 120px; height: 2px;
+        background: rgba(255,255,255,0.06);
+        border-radius: 2px;
+        margin-top: 20px;
+        overflow: hidden;
+        animation: splash-text-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.3s both;
+      }
+      #splash .loader-bar {
+        width: 40%; height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.6), transparent);
+        border-radius: 2px;
+        animation: splash-loader 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+      }
+      @keyframes splash-loader {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(350%); }
+      }
+      /* Hide root initially to avoid white flash */
+      #root { opacity: 0; transition: opacity 0.3s ease; }
+      #root.ready { opacity: 1; }
+    </style>
   </head>
   <body>
+    <!-- Splash screen: shown instantly, removed by React -->
+    <div id="splash">
+      <div class="logo-wrap">
+        <div class="pulse-ring"></div>
+        <div class="pulse-ring"></div>
+        <div class="pulse-ring"></div>
+        <svg class="logo-svg" viewBox="200 500 3600 3200" xmlns="http://www.w3.org/2000/svg">
+          <g>
+            <g transform="matrix(1.375418,0,-0,-0.692272,94.813608,4977.054673)">
+              <path d="M1385.17,2762L1644,3199.689L1126.339,3199.689L1385.17,2762Z"/>
+            </g>
+            <g transform="matrix(1.001672,-0,0,-1.045713,-20.80067,2635.592441)">
+              <path d="M2616.612,1432.126L1411.491,1432.126L1470.437,1238L2558.473,1238L2616.612,1432.126Z"/>
+            </g>
+            <g transform="matrix(1.449914,-0,0,-1.045713,-923.583631,3041.592441)">
+              <path d="M2616.612,1432.126L1411.491,1432.126L1470.437,1238L2558.473,1238L2616.612,1432.126Z"/>
+            </g>
+            <g transform="matrix(2.098742,0,-0,-1.045713,-2230.356453,3447.592441)">
+              <path d="M2616.612,1432.126L1411.491,1432.126L1445.219,1238L2575.084,1238L2616.612,1432.126Z"/>
+            </g>
+            <g transform="matrix(1.449914,-0,0,-1.045713,-923.583631,3853.592441)">
+              <path d="M2616.612,1432.126L1411.491,1432.126L1470.437,1238L2558.473,1238L2616.612,1432.126Z"/>
+            </g>
+          </g>
+        </svg>
+      </div>
+      <div class="app-name">DBundone</div>
+      <div class="loader-track"><div class="loader-bar"></div></div>
+    </div>
+
     <div id="root"></div>
     <script type="module" src="./main.tsx"></script>
   </body>

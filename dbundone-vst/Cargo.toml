@@ -1,0 +1,11 @@
+[workspace]
+members = ["plugins/dbundone-bridge", "xtask"]
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false

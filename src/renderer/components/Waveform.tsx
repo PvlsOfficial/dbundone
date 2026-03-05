@@ -150,6 +150,9 @@ export const Waveform: React.FC<WaveformProps> = ({
     }
   }
 
+  // Resize counter to trigger redraw on window resize without cloning arrays
+  const [resizeCounter, setResizeCounter] = useState(0)
+
   // Redraw via requestAnimationFrame, throttled to avoid redundant draws
   const rafIdRef = useRef<number>(0)
   useEffect(() => {
@@ -159,13 +162,15 @@ export const Waveform: React.FC<WaveformProps> = ({
       drawRef.current?.()
     })
     return () => cancelAnimationFrame(rafIdRef.current)
-  }, [peaks, currentTime, duration, waveColor, progressColor])
-
-  // Handle window resize
+  }, [peaks, currentTime, duration, waveColor, progressColor, resizeCounter])
   useEffect(() => {
-    const handleResize = () => setPeaks(p => [...p])
+    let rafId = 0
+    const handleResize = () => {
+      cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(() => setResizeCounter(c => c + 1))
+    }
     window.addEventListener('resize', handleResize)
-    return () => window.removeEventListener('resize', handleResize)
+    return () => { window.removeEventListener('resize', handleResize); cancelAnimationFrame(rafId) }
   }, [])
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {

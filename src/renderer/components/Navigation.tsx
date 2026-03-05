@@ -1,11 +1,12 @@
 import React from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Music, FolderOpen, Layers, Settings, Sparkles, FolderSync, BarChart3 } from "lucide-react"
+import { Music, FolderOpen, Layers, Settings, Sparkles, FolderSync, BarChart3, HelpCircle, Share2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui"
 import { Separator } from "@/components/ui"
+import { useI18n, type TranslationKey } from "@/i18n"
 
-type NavPage = "dashboard" | "groups" | "scheduler" | "settings" | "statistics"
+type NavPage = "dashboard" | "groups" | "scheduler" | "settings" | "statistics" | "help" | "shared"
 type Page = NavPage | "project-detail" | "group-detail"
 
 interface NavigationProps {
@@ -23,38 +24,31 @@ interface NavigationProps {
   } | null
 }
 
-function getPhaseLabel(phase?: string): string {
-  switch (phase) {
-    case "scanning": return "Scanning folders"
-    case "filtering": return "Filtering"
-    case "extracting_metadata": return "Reading metadata"
-    case "checking_existing": return "Checking projects"
-    case "saving_projects": return "Saving"
-    case "complete": return "Complete"
-    default: return "Scanning"
-  }
-}
-
-const navItems: { id: NavPage; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+const navItems: { id: NavPage; labelKey: TranslationKey; icon: React.ComponentType<{ className?: string }> }[] = [
   {
     id: "dashboard",
-    label: "Projects",
+    labelKey: "nav.projects",
     icon: Music,
   },
   {
     id: "groups",
-    label: "Groups",
+    labelKey: "nav.groups",
     icon: FolderOpen,
   },
   {
     id: "scheduler",
-    label: "Project Board",
+    labelKey: "nav.projectBoard",
     icon: Layers,
   },
   {
     id: "statistics",
-    label: "Statistics",
+    labelKey: "nav.statistics",
     icon: BarChart3,
+  },
+  {
+    id: "shared",
+    labelKey: "nav.shared",
+    icon: Share2,
   },
 ]
 
@@ -65,19 +59,34 @@ export const Navigation: React.FC<NavigationProps> = ({
   onScanFolderWithSelection,
   scanProgress,
 }) => {
+  const { t } = useI18n()
+
+  function getPhaseLabel(phase?: string): string {
+    switch (phase) {
+      case "scanning": return t('scan.scanning')
+      case "filtering": return t('scan.filtering')
+      case "extracting_metadata": return t('scan.extractingMetadata')
+      case "checking_existing": return t('scan.checkingExisting')
+      case "saving_projects": return t('scan.saving')
+      case "complete": return t('scan.complete')
+      default: return t('scan.default')
+    }
+  }
+
   return (
-    <nav className="w-[72px] h-full flex flex-col items-center py-4 bg-card/30 backdrop-blur-xl border-r border-border/30 z-50 relative">
+    <nav className="w-[72px] h-full flex flex-col items-center py-4 bg-card border-r border-border/30 z-50 relative">
         {/* Main Navigation */}
         <div className="flex flex-col items-center gap-1 flex-1">
           {navItems.map((item) => {
             const isActive = currentPage === item.id || (item.id === "groups" && currentPage === "group-detail")
             const Icon = item.icon
+            const label = t(item.labelKey)
             return (
               <Tooltip key={item.id}>
                 <TooltipTrigger asChild>
                   <button
                     onClick={() => onPageChange(item.id)}
-                    aria-label={item.label}
+                    aria-label={label}
                     className={cn(
                       "relative w-11 h-11 rounded-xl flex items-center justify-center transition-all duration-200",
                       isActive
@@ -96,7 +105,7 @@ export const Navigation: React.FC<NavigationProps> = ({
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="right" className="font-medium">
-                  {item.label}
+                  {label}
                 </TooltipContent>
               </Tooltip>
             )
@@ -130,11 +139,11 @@ export const Navigation: React.FC<NavigationProps> = ({
                   <div className="flex flex-col gap-1">
                     <div className="flex items-center gap-2">
                       <Sparkles className="w-3.5 h-3.5 text-primary" />
-                      Scan Project Folders
+                      {t('nav.scanProjectFolders')}
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      Left click: Scan configured folders<br />
-                      Right click: Choose new folder
+                      {t('nav.scanLeftClick')}<br />
+                      {t('nav.scanRightClick')}
                     </div>
                   </div>
                 </TooltipContent>
@@ -207,6 +216,33 @@ export const Navigation: React.FC<NavigationProps> = ({
           <Tooltip>
             <TooltipTrigger asChild>
               <button
+                onClick={() => onPageChange("help")}
+                aria-label="Help & Guide"
+                className={cn(
+                  "relative w-11 h-11 rounded-xl flex items-center justify-center transition-all duration-200",
+                  currentPage === "help"
+                    ? "text-primary bg-primary/10"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                )}
+              >
+                {currentPage === "help" && (
+                  <motion.div
+                    layoutId="activeNavIndicator"
+                    className="absolute inset-0 rounded-xl bg-primary/10 border border-primary/20"
+                    transition={{ type: "spring", bounce: 0.2, duration: 0.4 }}
+                  />
+                )}
+                <HelpCircle className={cn("w-5 h-5 relative z-10", currentPage === "help" && "text-primary")} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" className="font-medium">
+              {t('nav.helpGuide')}
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
                 onClick={() => onPageChange("settings")}
                 aria-label="Settings"
                 className={cn(
@@ -227,7 +263,7 @@ export const Navigation: React.FC<NavigationProps> = ({
               </button>
             </TooltipTrigger>
             <TooltipContent side="right" className="font-medium">
-              Settings
+              {t('nav.settings')}
             </TooltipContent>
           </Tooltip>
         </div>

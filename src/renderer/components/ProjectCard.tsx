@@ -1,6 +1,7 @@
 import React, { useState, useEffect, memo, useCallback, useRef } from "react"
-import { Play, Pause, Music, ExternalLink, Check, Sparkles, Loader2, Image, ImagePlus, Trash2, FolderOpen, Shuffle, Clock, Lightbulb, Headphones, Disc3, CheckCircle2, PartyPopper, Archive } from "lucide-react"
-import { Project, Tag } from "@shared/types"
+import { Play, Pause, Music, ExternalLink, Check, Sparkles, Loader2, Image, ImagePlus, Trash2, FolderOpen, Shuffle, Clock, Lightbulb, Headphones, Disc3, CheckCircle2, PartyPopper, Archive, Share2 } from "lucide-react"
+import { Project, Tag, PluginSession } from "@shared/types"
+import { PluginStatusIcon } from "./PluginStatus"
 import { cn, formatTimeSpent } from "@/lib/utils"
 import { useImageUrl } from "@/hooks/useImageUrl"
 import { Badge, Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui"
@@ -25,12 +26,14 @@ interface ProjectCardProps {
   isPlaying?: boolean
   onSelect?: (project: Project) => void
   selectionMode?: boolean
-  viewMode?: "grid" | "list"
+  viewMode?: "grid" | "list" | "gallery"
   gridSize?: "small" | "medium" | "large"
   isVisible?: boolean
   unsplashEnabled?: boolean
   aiArtworkEnabled?: boolean
   onOpenArtworkManager?: (project: Project) => void
+  pluginSessions?: PluginSession[]
+  shareStatus?: 'pending' | 'accepted' | 'mixed'
 }
 
 // Status config defined outside component to avoid re-creation
@@ -69,6 +72,9 @@ function arePropsEqual(prev: ProjectCardProps, next: ProjectCardProps): boolean 
     prev.gridSize === next.gridSize &&
     prev.isVisible === next.isVisible &&
     prev.tags === next.tags &&
+    prev.pluginSessions === next.pluginSessions &&
+    prev.project.shareCount === next.project.shareCount &&
+    prev.shareStatus === next.shareStatus &&
     // Compare tag arrays by reference first, then content
     (prev.project.tags === next.project.tags ||
       (prev.project.tags?.length === next.project.tags?.length &&
@@ -99,6 +105,7 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
     unsplashEnabled = true,
     aiArtworkEnabled = true,
     onOpenArtworkManager,
+    pluginSessions = [],
   } = props
 
   // Only load image when card is visible (lazy loading)
@@ -199,18 +206,17 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
   }, [project.dawType])
 
   return (
-    <TooltipProvider>
       <ContextMenu>
         <ContextMenuTrigger>
           {viewMode === "list" ? (
             // List View Layout - Horizontal and Compact
             <div
+              data-tour-project-card
               className={cn(
                 "group relative rounded-xl overflow-hidden cursor-pointer",
-                "bg-card/50 backdrop-blur-sm border border-border/30",
-                "hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5",
-                "transition-all duration-200 ease-out p-3",
-                "hover:translate-x-1",
+                "bg-card border border-border/30",
+                "hover:border-primary/30",
+                "transition-colors duration-150 ease-out p-3",
                 isSelected && "ring-2 ring-primary border-primary/50"
               )}
               style={{ contentVisibility: 'auto', containIntrinsicSize: '0 80px' }}
@@ -279,7 +285,7 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
                           "shadow-lg shadow-primary/30",
                           "hover:bg-primary hover:scale-105 active:scale-95",
                           "transition-all duration-200",
-                          isPlaying && "animate-pulse"
+                          isPlaying && "text-primary"
                         )}
                       >
                         {isPlaying ? (
@@ -371,6 +377,37 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
                       </Badge>
                     )}
 
+                    {/* Plugin Bridge Status */}
+                    <PluginStatusIcon sessions={pluginSessions} currentProjectId={project.id} pluginLinked={project.pluginLinked} />
+
+                    {/* Shared Indicator */}
+                    {(project.shareCount ?? 0) > 0 && (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className={cn(
+                              "flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium border",
+                              props.shareStatus === 'accepted'
+                                ? "bg-green-500/10 text-green-400 border-green-500/20"
+                                : props.shareStatus === 'pending'
+                                ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                                : props.shareStatus === 'mixed'
+                                ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                                : "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                            )}>
+                              <Share2 className="w-3 h-3" />
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            Shared with {project.shareCount} {project.shareCount === 1 ? 'person' : 'people'}
+                            {props.shareStatus === 'pending' && ' (pending)'}
+                            {props.shareStatus === 'accepted' && ' (accepted)'}
+                            {props.shareStatus === 'mixed' && ' (some pending)'}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
+
                     {/* Collection */}
                     {project.collectionName && (
                       <span className="text-sm text-muted-foreground truncate max-w-32">
@@ -459,15 +496,240 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
                 </div>
               )}
             </div>
+          ) : viewMode === "gallery" ? (
+            // Gallery View Layout — Square photo card, metadata on hover
+            <div
+              data-tour-project-card
+              className={cn(
+                "group relative aspect-square rounded-xl overflow-hidden cursor-pointer",
+                "bg-card border border-border/20",
+                "hover:border-primary/40",
+                "transition-colors duration-150 ease-out",
+                isSelected && "ring-2 ring-primary border-primary/50"
+              )}
+              style={{ contentVisibility: 'auto' }}
+              onClick={handleCardClick}
+              onMouseEnter={() => setIsHovered(true)}
+              onMouseLeave={() => setIsHovered(false)}
+            >
+              {/* Full-bleed artwork */}
+              {artworkUrl && !imageError ? (
+                <img
+                  src={artworkUrl}
+                  alt={project.title}
+                  className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                  onError={() => setImageError(true)}
+                  loading="lazy"
+                  decoding="async"
+                />
+              ) : (
+                <div className="w-full h-full bg-gradient-to-br from-muted/50 to-muted flex items-center justify-center">
+                  <Music className="w-12 h-12 text-muted-foreground/20" />
+                </div>
+              )}
+
+              {/* Selection Checkbox */}
+              {selectionMode && (
+                <div className="absolute z-20 top-2 left-2">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onSelect?.(project)
+                    }}
+                    aria-label={`Select project ${project.title}`}
+                    className={cn(
+                      "w-5 h-5 rounded-md flex items-center justify-center transition-all duration-200 border-2",
+                      isSelected
+                        ? "bg-primary border-primary text-primary-foreground"
+                        : "bg-background/80 border-muted-foreground/50 hover:border-primary"
+                    )}
+                  >
+                    {isSelected && <Check className="w-3 h-3" />}
+                  </button>
+                </div>
+              )}
+
+              {/* Top-right: always-visible status indicators */}
+              <div className="absolute z-10 top-2 right-2 flex items-center gap-1">
+                {/* Plugin bridge indicator — always visible */}
+                <PluginStatusIcon sessions={pluginSessions} currentProjectId={project.id} pluginLinked={project.pluginLinked} />
+
+                {/* Share indicator — always visible */}
+                {(project.shareCount ?? 0) > 0 && (
+                  <div className={cn(
+                    "w-5 h-5 rounded-full flex items-center justify-center",
+                    "bg-background/70 backdrop-blur-sm",
+                    props.shareStatus === 'accepted'
+                      ? "text-green-400"
+                      : (props.shareStatus === 'pending' || props.shareStatus === 'mixed')
+                      ? "text-amber-400"
+                      : "text-blue-400"
+                  )}>
+                    <Share2 className="w-3 h-3" />
+                  </div>
+                )}
+
+                {/* DAW Badge — on hover */}
+                {project.dawProjectPath && (
+                  <button
+                    onClick={handleDawClick}
+                    aria-label={`Open ${project.title} in DAW`}
+                    className={cn(
+                      "px-1.5 py-0.5 rounded text-[10px] font-semibold",
+                      "bg-background/80 backdrop-blur-sm border border-border/50",
+                      "hover:bg-primary hover:text-primary-foreground hover:border-primary",
+                      "transition-all duration-200",
+                      "opacity-0 group-hover:opacity-100"
+                    )}
+                  >
+                    {getDawBadge()}
+                  </button>
+                )}
+              </div>
+
+              {/* Play button — center, on hover */}
+              {(project.audioPreviewPath || project.favoriteVersionId) && (
+                <div
+                  className={cn(
+                    "absolute inset-0 flex items-center justify-center transition-all duration-200 z-10",
+                    (isHovered || isPlaying) ? "opacity-100 scale-100" : "opacity-0 scale-90"
+                  )}
+                >
+                  <button
+                    onClick={handlePlayClick}
+                    aria-label={isPlaying ? `Pause ${project.title}` : `Play ${project.title}`}
+                    className={cn(
+                      "w-10 h-10 rounded-full flex items-center justify-center",
+                      "bg-primary/90 backdrop-blur-sm text-primary-foreground",
+                      "shadow-xl shadow-primary/30",
+                      "hover:bg-primary hover:scale-110 active:scale-95",
+                      "transition-all duration-200",
+                      isPlaying && "animate-pulse"
+                    )}
+                  >
+                    {isPlaying ? (
+                      <Pause className="w-4 h-4" />
+                    ) : (
+                      <Play className="w-4 h-4 ml-0.5" />
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* Gradient scrim — always present for title legibility */}
+              <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/85 via-black/40 to-transparent pointer-events-none" />
+
+              {/* Bottom overlay — title + status always visible, extra info on hover */}
+              <div className="absolute inset-x-0 bottom-0 p-2.5 z-10">
+                {/* Title row with status */}
+                <div className="flex items-center gap-1.5">
+                  <h3 className="text-sm font-semibold text-white truncate leading-tight flex-1">
+                    {project.title}
+                  </h3>
+                  {STATUS_CONFIG[project.status] && (
+                    <span className={cn(
+                      "flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium flex items-center gap-0.5",
+                      "bg-white/15 backdrop-blur-sm text-white/90"
+                    )}>
+                      {STATUS_CONFIG[project.status].icon}
+                    </span>
+                  )}
+                </div>
+
+                {/* Artists / Genre — always visible when present */}
+                {(project.artists || project.genre) && (
+                  <p className="text-[10px] text-white/60 truncate mt-0.5">
+                    {[project.artists, project.genre].filter(Boolean).join(' · ')}
+                  </p>
+                )}
+
+                {/* Hover detail rows — up to 3 compact lines */}
+                <div className={cn(
+                  "mt-1 transition-all duration-200 overflow-hidden",
+                  isHovered ? "max-h-40 opacity-100" : "max-h-0 opacity-0"
+                )}>
+                  {/* Row 1: all metadata pills — BPM, Key, Time, Status badge wrapped */}
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {project.bpm > 0 && (
+                      <span className="text-[9px] px-1 py-px rounded bg-white/15 backdrop-blur-sm text-white/90 font-medium leading-tight">
+                        {project.bpm} BPM
+                      </span>
+                    )}
+                    {project.musicalKey && project.musicalKey !== "None" && (
+                      <span className="text-[9px] px-1 py-px rounded bg-white/15 backdrop-blur-sm text-white/90 font-medium leading-tight">
+                        {project.musicalKey}
+                      </span>
+                    )}
+                    {project.timeSpent && project.timeSpent > 0 && (
+                      <span className="text-[9px] px-1 py-px rounded bg-white/15 backdrop-blur-sm text-white/90 font-medium flex items-center gap-0.5 leading-tight">
+                        <Clock className="w-2.5 h-2.5" />
+                        {formatTimeSpent(project.timeSpent)}
+                      </span>
+                    )}
+                    {project.dawType && (
+                      <span className="text-[9px] px-1 py-px rounded bg-white/10 text-white/60 font-medium leading-tight">
+                        {project.dawType}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Row 2: tags — inline with pills, wraps to second line naturally */}
+                  {project.tags && project.tags.length > 0 && (
+                    <div className="flex items-center gap-1 flex-wrap mt-0.5">
+                      {project.tags.slice(0, 4).map((tag, i) => (
+                        <span
+                          key={i}
+                          className="text-[9px] px-1 py-px rounded font-medium leading-tight"
+                          style={{
+                            backgroundColor: `${getTagColor(tag)}30`,
+                            color: getTagColor(tag),
+                          }}
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                      {project.tags.length > 4 && (
+                        <span className="text-[9px] text-white/50">+{project.tags.length - 4}</span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Row 3: collection + date */}
+                  {(project.collectionName || project.createdAt) && (
+                    <div className="flex items-center gap-1.5 mt-0.5 text-[9px] text-white/50 truncate leading-tight">
+                      {project.collectionName && (
+                        <span className="truncate max-w-[60%]">{project.collectionName}</span>
+                      )}
+                      {project.collectionName && project.createdAt && (
+                        <span className="text-white/30">·</span>
+                      )}
+                      {project.createdAt && (
+                        <span className="flex-shrink-0">
+                          {new Date(project.createdAt).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Generating Art Overlay */}
+              {isGeneratingArt && (
+                <div className="absolute inset-0 bg-background/90 backdrop-blur-sm flex flex-col items-center justify-center z-30 transition-opacity duration-200">
+                  <Loader2 className="w-5 h-5 text-primary animate-spin mb-1" />
+                  <p className="text-[10px] text-muted-foreground">Generating...</p>
+                </div>
+              )}
+            </div>
           ) : (
             // Grid View Layout
             <div
+              data-tour-project-card
               className={cn(
                 "group relative rounded-2xl overflow-hidden cursor-pointer",
-                "bg-card/50 backdrop-blur-sm border border-border/30",
-                "hover:border-primary/30 hover:shadow-xl hover:shadow-primary/5",
-                "transition-all duration-200 ease-out",
-                "hover:-translate-y-1",
+                "bg-card border border-border/30",
+                "hover:border-primary/30",
+                "transition-colors duration-150 ease-out",
                 isSelected && "ring-2 ring-primary border-primary/50"
               )}
               style={{ contentVisibility: 'auto', containIntrinsicSize: '0 300px' }}
@@ -658,42 +920,68 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
                   )}>
                     {project.title}
                   </h3>
-                  {STATUS_CONFIG[project.status] && (
-                    <Badge
-                      variant="secondary"
-                      className={cn(
-                        "gap-1 flex-shrink-0 border-0",
-                        STATUS_CONFIG[project.status].bgColor,
-                        STATUS_CONFIG[project.status].color,
-                        gridSize === "small" && "text-[8px] px-1.5 py-0.5",
-                        gridSize === "medium" && "text-[10px] px-2 py-0.5",
-                        gridSize === "large" && "text-xs px-3 py-1"
-                      )}
-                    >
-                      {STATUS_CONFIG[project.status].icon}
-                    </Badge>
-                  )}
-                </div>
-
-                {/* Genre & Artists */}
-                {(project.genre || project.artists) && (
-                  <div className={cn(
-                    "flex items-center gap-2 text-muted-foreground truncate",
-                    gridSize === "small" && "text-[10px]",
-                    gridSize === "medium" && "text-xs",
-                    gridSize === "large" && "text-sm"
-                  )}>
-                    {project.artists && (
-                      <span className="truncate">{project.artists}</span>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <PluginStatusIcon sessions={pluginSessions} currentProjectId={project.id} pluginLinked={project.pluginLinked} />
+                    {/* Shared Indicator (grid view) */}
+                    {(project.shareCount ?? 0) > 0 && (
+                      <div className={cn(
+                        "flex items-center justify-center rounded-full",
+                        props.shareStatus === 'accepted'
+                          ? "bg-green-500/10"
+                          : (props.shareStatus === 'pending' || props.shareStatus === 'mixed')
+                          ? "bg-amber-500/10"
+                          : "bg-blue-500/10",
+                        gridSize === "small" && "w-4 h-4",
+                        gridSize === "medium" && "w-5 h-5",
+                        gridSize === "large" && "w-6 h-6"
+                      )}>
+                        <Share2 className={cn(
+                          props.shareStatus === 'accepted'
+                            ? "text-green-400"
+                            : (props.shareStatus === 'pending' || props.shareStatus === 'mixed')
+                            ? "text-amber-400"
+                            : "text-blue-400",
+                          gridSize === "small" && "w-2.5 h-2.5",
+                          gridSize === "medium" && "w-3 h-3",
+                          gridSize === "large" && "w-3.5 h-3.5"
+                        )} />
+                      </div>
                     )}
-                    {project.artists && project.genre && (
-                      <span className="text-muted-foreground/50">|</span>
-                    )}
-                    {project.genre && (
-                      <span className="truncate">{project.genre}</span>
+                    {STATUS_CONFIG[project.status] && (
+                      <Badge
+                        variant="secondary"
+                        className={cn(
+                          "gap-1 flex-shrink-0 border-0",
+                          STATUS_CONFIG[project.status].bgColor,
+                          STATUS_CONFIG[project.status].color,
+                          gridSize === "small" && "text-[8px] px-1.5 py-0.5",
+                          gridSize === "medium" && "text-[10px] px-2 py-0.5",
+                          gridSize === "large" && "text-xs px-3 py-1"
+                        )}
+                      >
+                        {STATUS_CONFIG[project.status].icon}
+                      </Badge>
                     )}
                   </div>
-                )}
+                </div>
+
+                {/* Genre & Artists - always rendered for consistent card height */}
+                <div className={cn(
+                  "flex items-center gap-2 text-muted-foreground truncate",
+                  gridSize === "small" && "text-[10px] h-3.5",
+                  gridSize === "medium" && "text-xs h-4",
+                  gridSize === "large" && "text-sm h-5"
+                )}>
+                  {project.artists && (
+                    <span className="truncate">{project.artists}</span>
+                  )}
+                  {project.artists && project.genre && (
+                    <span className="text-muted-foreground/50">|</span>
+                  )}
+                  {project.genre && (
+                    <span className="truncate">{project.genre}</span>
+                  )}
+                </div>
 
                 {/* Tags - Fixed height container for consistency */}
                 <div className={cn(
@@ -738,17 +1026,15 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
                   )}
                 </div>
 
-                {/* Collection */}
-                {project.collectionName && (
-                  <p className={cn(
-                    "text-muted-foreground truncate",
-                    gridSize === "small" && "text-[10px]",
-                    gridSize === "medium" && "text-xs",
-                    gridSize === "large" && "text-sm"
-                  )}>
-                    {project.collectionName}
-                  </p>
-                )}
+                {/* Collection - always rendered for consistent card height */}
+                <div className={cn(
+                  "text-muted-foreground truncate",
+                  gridSize === "small" && "text-[10px] h-3.5",
+                  gridSize === "medium" && "text-xs h-4",
+                  gridSize === "large" && "text-sm h-5"
+                )}>
+                  {project.collectionName || '\u00A0'}
+                </div>
               </div>
 
               {/* Generating Art Overlay */}
@@ -836,7 +1122,6 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
-    </TooltipProvider>
   )
 }, arePropsEqual)
 

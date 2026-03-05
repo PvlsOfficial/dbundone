@@ -24,6 +24,7 @@ const mockProject: Project = {
   fileModifiedAt: '2025-06-01T00:00:00Z',
   archived: false,
   timeSpent: 120,
+  sortOrder: 0,
 };
 
 const mockTags: Tag[] = [
@@ -46,6 +47,14 @@ const mockSettings: AppSettings = {
   viewMode: 'grid',
   gridSize: 'medium',
   unsplashEnabled: true,
+  autoScanOnStartup: false,
+  defaultSort: 'date-newest',
+  notificationsEnabled: true,
+  notifyOnShare: true,
+  notifyOnAnnotation: true,
+  notifyOnStatusChange: true,
+  confirmDestructiveActions: true,
+  language: 'en',
 };
 
 const defaultFilters: FilterOptions = {
@@ -55,6 +64,9 @@ const defaultFilters: FilterOptions = {
   collectionFilter: null,
   statusFilter: null,
   dawFilter: null,
+  genreFilter: null,
+  artistFilter: null,
+  recordingFilter: null,
 };
 
 // ---- Logo Component ----

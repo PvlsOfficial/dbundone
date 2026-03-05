@@ -1,8 +1,8 @@
 //! Native Rust FLP (FL Studio project) parser.
 //!
 //! Extracts metadata from .flp files without requiring Python/pyflp.
-//! Only parses the fields we need: title, tempo, channel count, pattern count,
-//! time spent, and created date.
+//! Parses: title, tempo, channel count, pattern count, time spent, created date,
+//! plugins (VSTs), sample file paths, channel/mixer structure.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -31,10 +31,85 @@ const EVENT_TIMESTAMP: u8 = DATA + 29; // 237 - created_on (f64) + time_spent (f
 const EVENT_PATTERN_NEW: u8 = WORD + 1; // 65 - PatternID.New (signals a new pattern)
                                         // EVENT_PATTERN_NAME (TEXT + 1 = 193) could be used for pattern name extraction if needed
 
+// ── Channel/Plugin event IDs (extended analysis) ─────────────────────────────
+// Channel type: BYTE+21 in FL 2025.3+, DWORD+21 in older versions
+const EVENT_CHANNEL_TYPE_BYTE: u8 = 21; // BYTE range - 0=sampler, 2=generator/VST, 3=layer, 4=audio_clip, 5=automation
+const EVENT_CHANNEL_TYPE_DWORD: u8 = DWORD + 21; // 149 - legacy (pre-2025.3)
+const EVENT_SAMPLE_FILE_NAME: u8 = TEXT + 4; // 196 - Sample file path
+const EVENT_PLUGIN_NAME: u8 = TEXT + 9; // 201 - Plugin DLL name (e.g. "Serum_x64.dll")
+const EVENT_CHANNEL_NAME: u8 = TEXT + 11; // 203 - Channel display name
+const EVENT_PATTERN_NAME: u8 = TEXT + 1; // 193 - Pattern name
+const EVENT_MIXER_TRACK_NAME: u8 = TEXT + 12; // 204 - Mixer insert track name
+const EVENT_PLUGIN_COLOR: u8 = DWORD + 0; // 128 - Color (used for channels/mixer)
+const EVENT_NEW_CHANNEL: u8 = WORD + 0; // 64 - new channel marker / channel enabled
+
+// Plugin data event (binary blob containing wrapped VST info for Fruity Wrapper)
+const EVENT_PLUGIN_DATA: u8 = DATA + 5; // 213 - plugin parameters / binary data
+// Mixer target insert: WORD+40 in FL 2025.3+ (the insert number a channel routes to)
+const EVENT_TARGET_INSERT: u8 = WORD + 40; // 104 - which mixer insert this channel routes to
+// Mixer insert params/separator: DATA+28 = 236 – appears once per mixer insert
+const EVENT_MIXER_PARAMS: u8 = DATA + 28; // 236 - mixer insert data block separator
+
 /// Delphi epoch: December 30, 1899
 const DELPHI_EPOCH_OFFSET_DAYS: f64 = 25569.0; // Days between Delphi epoch and Unix epoch
 
+/// Information about a single channel in the FL Studio project
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlpChannel {
+    pub index: usize,
+    pub name: Option<String>,
+    pub channel_type: String, // "sampler", "generator", "layer", "audio_clip", "unknown"
+    pub plugin_name: Option<String>,
+    pub sample_path: Option<String>,
+    pub color: Option<String>, // hex color
+    pub mixer_track: Option<i32>,
+}
+
+/// Information about a mixer track
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlpMixerTrack {
+    pub index: usize,
+    pub name: Option<String>,
+    pub color: Option<String>,
+    pub plugins: Vec<String>,
+}
+
+/// Information about a pattern
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlpPattern {
+    pub index: usize,
+    pub name: Option<String>,
+}
+
+/// Plugin information extracted from the project
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlpPlugin {
+    pub name: String,
+    pub dll_name: Option<String>,
+    pub channel_name: Option<String>,
+    pub channel_index: Option<usize>,
+    pub is_instrument: bool,
+    pub preset_name: Option<String>,
+}
+
+/// Extended analysis result from deep FLP parsing
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlpAnalysis {
+    pub plugins: Vec<FlpPlugin>,
+    pub samples: Vec<String>,
+    pub channels: Vec<FlpChannel>,
+    pub mixer_tracks: Vec<FlpMixerTrack>,
+    pub patterns: Vec<FlpPattern>,
+    pub fl_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FlpMetadata {
     pub file_path: String,
     pub title: Option<String>,
@@ -536,6 +611,621 @@ pub fn parse_flp_from_bytes(data: &[u8], label: &str) -> Result<FlpMetadata, Str
     })
 }
 
+/// Deep analysis of an FLP file extracting plugins, samples, channels, mixer tracks.
+/// This is a separate pass from parse_flp_from_bytes for extended project analysis.
+pub fn analyze_flp(file_path: &str) -> Result<FlpAnalysis, String> {
+    let data = fs::read(file_path).map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
+    analyze_flp_from_bytes(&data, file_path)
+}
+
+/// Deep analysis from raw bytes
+pub fn analyze_flp_from_bytes(data: &[u8], label: &str) -> Result<FlpAnalysis, String> {
+    if data.len() < 22 {
+        return Err(format!("File too small to be an FLP: {}", label));
+    }
+
+    if &data[0..4] != b"FLhd" {
+        return Err(format!("Invalid FLP header magic in {}", label));
+    }
+
+    let header_size = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+    if header_size != 6 {
+        return Err(format!("Unexpected header size {} in {}", header_size, label));
+    }
+
+    if &data[14..18] != b"FLdt" {
+        return Err(format!("Invalid data chunk magic in {}", label));
+    }
+
+    let events_data = &data[22..];
+    let mut cursor = Cursor::new(events_data);
+    let events_len = events_data.len() as u64;
+
+    let mut use_unicode = false;
+    let mut fl_version_str: Option<String> = None;
+
+    // Channel tracking
+    let mut channels: Vec<FlpChannel> = Vec::new();
+    let mut current_channel_index: usize = 0;
+    let mut current_channel_name: Option<String> = None;
+    let mut current_channel_type: u32 = 0; // 0=sampler
+    let mut current_plugin_name: Option<String> = None;
+    let mut current_vst_name: Option<String> = None; // Extracted from plugin data blob
+    let mut current_sample_path: Option<String> = None;
+    let mut current_color: Option<String> = None;
+    let mut current_mixer_target: Option<i32> = None;
+    let mut in_channel_section = false;
+
+    // Mixer tracking
+    let mut mixer_tracks: Vec<FlpMixerTrack> = Vec::new();
+    let mut mixer_track_index: usize = 0;
+    let mut in_mixer_section = false;
+    let mut mixer_insert_started = false;
+    let mut pending_mixer_name: Option<String> = None;
+    let mut current_mixer_name: Option<String> = None;
+    let mut current_mixer_color: Option<String> = None;
+    let mut current_mixer_plugins: Vec<String> = Vec::new();
+    let mut current_mixer_plugin_name: Option<String> = None;
+
+    // Pattern tracking
+    let mut patterns: Vec<FlpPattern> = Vec::new();
+    let mut current_pattern_id: Option<usize> = None;
+
+    // Plugin list (deduplicated)
+    let mut plugin_set: HashMap<String, FlpPlugin> = HashMap::new();
+
+    // Sample paths (deduplicated)
+    let mut sample_set: Vec<String> = Vec::new();
+    let mut sample_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    while cursor.position() < events_len {
+        let mut id_byte = [0u8; 1];
+        if cursor.read_exact(&mut id_byte).is_err() {
+            break;
+        }
+        let id = id_byte[0];
+
+        let event_data: Vec<u8> = if id < WORD {
+            let mut buf = [0u8; 1];
+            if cursor.read_exact(&mut buf).is_err() { break; }
+            buf.to_vec()
+        } else if id < DWORD {
+            let mut buf = [0u8; 2];
+            if cursor.read_exact(&mut buf).is_err() { break; }
+            buf.to_vec()
+        } else if id < TEXT {
+            let mut buf = [0u8; 4];
+            if cursor.read_exact(&mut buf).is_err() { break; }
+            buf.to_vec()
+        } else {
+            let size = match read_varint(&mut cursor) {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let mut buf = vec![0u8; size];
+            if cursor.read_exact(&mut buf).is_err() { break; }
+            buf
+        };
+
+        match id {
+            EVENT_FL_VERSION => {
+                let version_str = String::from_utf8_lossy(&event_data)
+                    .trim_end_matches('\0')
+                    .to_string();
+                if let Some((major, minor)) = parse_fl_version(&version_str) {
+                    use_unicode = major > 11 || (major == 11 && minor >= 5);
+                }
+                fl_version_str = Some(version_str);
+            }
+            EVENT_NEW_CHANNEL => {
+                // Finalize previous channel if we were tracking one
+                if in_channel_section {
+                    let ch_type_str = channel_type_str(current_channel_type);
+
+                    // Resolve "Fruity Wrapper" → actual VST name from plugin data, then channel name
+                    let resolved_plugin = resolve_plugin_display_name(
+                        current_plugin_name.as_deref(),
+                        current_channel_name.as_deref(),
+                        current_vst_name.as_deref(),
+                    );
+
+                    let is_automation = ch_type_str == "automation"
+                        || current_channel_name.as_deref().map_or(false, |n| is_automation_clip_name(n));
+
+                    channels.push(FlpChannel {
+                        index: current_channel_index,
+                        name: current_channel_name.take(),
+                        channel_type: ch_type_str.to_string(),
+                        plugin_name: if is_automation { None } else { resolved_plugin.clone() },
+                        sample_path: current_sample_path.clone(),
+                        color: current_color.take(),
+                        mixer_track: current_mixer_target,
+                    });
+
+                    // Track plugin (skip automation clips and empty names)
+                    if !is_automation {
+                        if let Some(ref display_name) = resolved_plugin {
+                            if !display_name.is_empty() && !plugin_set.contains_key(display_name) {
+                                plugin_set.insert(display_name.clone(), FlpPlugin {
+                                    name: display_name.clone(),
+                                    dll_name: current_plugin_name.clone(),
+                                    channel_name: channels.last().and_then(|c| c.name.clone()),
+                                    channel_index: Some(current_channel_index),
+                                    is_instrument: current_channel_type == 2,
+                                    preset_name: None,
+                                });
+                            }
+                        } else if current_channel_type == 0 {
+                            // Sampler channel — add using channel name as plugin name
+                            if let Some(ref ch_name) = channels.last().and_then(|c| c.name.clone()) {
+                                if !ch_name.is_empty() && !plugin_set.contains_key(ch_name) {
+                                    plugin_set.insert(ch_name.clone(), FlpPlugin {
+                                        name: ch_name.clone(),
+                                        dll_name: Some("Sampler".to_string()),
+                                        channel_name: Some(ch_name.clone()),
+                                        channel_index: Some(current_channel_index),
+                                        is_instrument: true,
+                                        preset_name: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    // Track sample
+                    if let Some(ref spath) = current_sample_path {
+                        if !spath.is_empty() && !sample_seen.contains(spath) {
+                            sample_seen.insert(spath.clone());
+                            sample_set.push(spath.clone());
+                        }
+                    }
+
+                    current_channel_index += 1;
+                }
+                in_channel_section = true;
+                current_channel_type = 0;
+                current_plugin_name = None;
+                current_vst_name = None;
+                current_sample_path = None;
+                current_color = None;
+                current_channel_name = None;
+                current_mixer_target = None;
+            }
+            EVENT_CHANNEL_TYPE_BYTE => {
+                // FL 2025.3+: channel type in BYTE range (id=21)
+                // 0=sampler, 2=generator/VST, 3=layer, 4=audio_clip, 5=automation
+                if in_channel_section && event_data.len() >= 1 {
+                    current_channel_type = event_data[0] as u32;
+                }
+            }
+            EVENT_CHANNEL_TYPE_DWORD => {
+                // Legacy (pre-2025.3): channel type in DWORD range (id=149)
+                if event_data.len() >= 4 {
+                    current_channel_type = u32::from_le_bytes([
+                        event_data[0], event_data[1], event_data[2], event_data[3],
+                    ]);
+                }
+            }
+            EVENT_CHANNEL_NAME => {
+                let name = decode_string(&event_data, use_unicode);
+                if !name.is_empty() {
+                    current_channel_name = Some(name);
+                }
+            }
+            EVENT_PLUGIN_NAME => {
+                let name = decode_string(&event_data, use_unicode);
+                if !name.is_empty() {
+                    if in_mixer_section {
+                        current_mixer_plugin_name = Some(name);
+                    } else {
+                        current_plugin_name = Some(name);
+                    }
+                }
+            }
+            EVENT_SAMPLE_FILE_NAME => {
+                let path = decode_string(&event_data, use_unicode);
+                if !path.is_empty() {
+                    current_sample_path = Some(path);
+                }
+            }
+            EVENT_PLUGIN_COLOR => {
+                if event_data.len() >= 4 {
+                    let r = event_data[0];
+                    let g = event_data[1];
+                    let b = event_data[2];
+                    if in_mixer_section {
+                        current_mixer_color = Some(format!("#{:02x}{:02x}{:02x}", r, g, b));
+                    } else {
+                        current_color = Some(format!("#{:02x}{:02x}{:02x}", r, g, b));
+                    }
+                }
+            }
+            EVENT_PLUGIN_DATA => {
+                if in_mixer_section {
+                    // Extract VST name from mixer effect plugin data
+                    let vst_name = if event_data.len() > 20 {
+                        extract_vst_name_from_plugin_data(&event_data)
+                    } else {
+                        None
+                    };
+
+                    let plugin_display = if let Some(ref vst) = vst_name {
+                        clean_plugin_name(vst)
+                    } else if let Some(ref pname) = current_mixer_plugin_name {
+                        if !is_fruity_wrapper(pname) {
+                            // FL native plugin (e.g. "Fruity Balance") — use the name directly
+                            pname.clone()
+                        } else {
+                            String::new() // Extraction failed for wrapped plugin
+                        }
+                    } else {
+                        String::new()
+                    };
+
+                    if !plugin_display.is_empty() {
+                        current_mixer_plugins.push(plugin_display);
+                    }
+                    current_mixer_plugin_name = None;
+                } else if in_channel_section && event_data.len() > 20 {
+                    // Extract VST DLL name from the plugin data blob (for Fruity Wrapper channels)
+                    if let Some(vst) = extract_vst_name_from_plugin_data(&event_data) {
+                        current_vst_name = Some(vst);
+                    }
+                }
+            }
+            EVENT_TARGET_INSERT => {
+                // FL 2025.3+: mixer insert target in WORD range (id=104)
+                if in_channel_section && event_data.len() >= 2 {
+                    let target = u16::from_le_bytes([event_data[0], event_data[1]]) as i32;
+                    if target > 0 {
+                        current_mixer_target = Some(target);
+                    }
+                }
+            }
+            EVENT_PATTERN_NEW => {
+                // PATTERN_NEW carries a u16 pattern ID — may appear twice per pattern
+                if event_data.len() >= 2 {
+                    let pat_id = u16::from_le_bytes([event_data[0], event_data[1]]) as usize;
+                    // Only create if this pattern ID doesn't already exist
+                    if !patterns.iter().any(|p| p.index == pat_id) {
+                        patterns.push(FlpPattern {
+                            index: pat_id,
+                            name: None,
+                        });
+                    }
+                    // Track current pattern ID for PATTERN_NAME association
+                    current_pattern_id = Some(pat_id);
+                }
+            }
+            EVENT_PATTERN_NAME => {
+                // PATTERN_NAME applies to the most recent PATTERN_NEW by its ID
+                let name = decode_string(&event_data, use_unicode);
+                if !name.is_empty() {
+                    if let Some(pat_id) = current_pattern_id {
+                        if let Some(p) = patterns.iter_mut().find(|p| p.index == pat_id) {
+                            p.name = Some(name);
+                        }
+                    }
+                }
+            }
+            EVENT_MIXER_TRACK_NAME => {
+                let name = decode_string(&event_data, use_unicode);
+                if !in_mixer_section {
+                    in_mixer_section = true;
+                    // End channel section when mixer starts
+                    in_channel_section = false;
+                }
+                pending_mixer_name = if name.is_empty() { None } else { Some(name) };
+            }
+            EVENT_MIXER_PARAMS => {
+                // id=236 (DATA+28): mixer insert data block separator
+                // Each mixer insert starts with this event
+                if !in_mixer_section {
+                    // First id=236 might appear before MIXER_TRACK_NAME if first insert is unnamed
+                    // But typically MIXER_TRACK_NAME triggers mixer section entry first
+                    in_mixer_section = true;
+                    in_channel_section = false;
+                }
+
+                // Finalize previous mixer insert
+                if mixer_insert_started {
+                    // Dedup plugins (same plugin in multiple slots)
+                    current_mixer_plugins.dedup();
+                    let has_content = current_mixer_name.is_some() || !current_mixer_plugins.is_empty();
+                    if has_content {
+                        mixer_tracks.push(FlpMixerTrack {
+                            index: mixer_track_index,
+                            name: current_mixer_name.take(),
+                            color: current_mixer_color.take(),
+                            plugins: current_mixer_plugins.drain(..).collect(),
+                        });
+                    } else {
+                        current_mixer_name = None;
+                        current_mixer_color = None;
+                        current_mixer_plugins.clear();
+                    }
+                }
+
+                // Start new mixer insert
+                mixer_insert_started = true;
+                mixer_track_index += 1;
+                current_mixer_name = pending_mixer_name.take();
+                current_mixer_color = None;
+                current_mixer_plugins.clear();
+                current_mixer_plugin_name = None;
+            }
+            _ => {}
+        }
+    }
+
+    // Finalize last channel
+    if in_channel_section {
+        let ch_type_str = channel_type_str(current_channel_type);
+
+        // Resolve "Fruity Wrapper" → actual VST name from plugin data, then channel name
+        let resolved_plugin = resolve_plugin_display_name(
+            current_plugin_name.as_deref(),
+            current_channel_name.as_deref(),
+            current_vst_name.as_deref(),
+        );
+
+        let is_automation = ch_type_str == "automation"
+            || current_channel_name.as_deref().map_or(false, |n| is_automation_clip_name(n));
+
+        channels.push(FlpChannel {
+            index: current_channel_index,
+            name: current_channel_name.take(),
+            channel_type: ch_type_str.to_string(),
+            plugin_name: if is_automation { None } else { resolved_plugin.clone() },
+            sample_path: current_sample_path.clone(),
+            color: current_color.take(),
+            mixer_track: current_mixer_target,
+        });
+
+        if !is_automation {
+            if let Some(ref display_name) = resolved_plugin {
+                if !display_name.is_empty() && !plugin_set.contains_key(display_name) {
+                    plugin_set.insert(display_name.clone(), FlpPlugin {
+                        name: display_name.clone(),
+                        dll_name: current_plugin_name.clone(),
+                        channel_name: channels.last().and_then(|c| c.name.clone()),
+                        channel_index: Some(current_channel_index),
+                        is_instrument: current_channel_type == 2,
+                        preset_name: None,
+                    });
+                }
+            } else if current_channel_type == 0 {
+                // Sampler channel — add using channel name as plugin name
+                if let Some(ref ch_name) = channels.last().and_then(|c| c.name.clone()) {
+                    if !ch_name.is_empty() && !plugin_set.contains_key(ch_name) {
+                        plugin_set.insert(ch_name.clone(), FlpPlugin {
+                            name: ch_name.clone(),
+                            dll_name: Some("Sampler".to_string()),
+                            channel_name: Some(ch_name.clone()),
+                            channel_index: Some(current_channel_index),
+                            is_instrument: true,
+                            preset_name: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Some(ref spath) = current_sample_path {
+            if !spath.is_empty() && !sample_seen.contains(spath) {
+                sample_set.push(spath.clone());
+            }
+        }
+    }
+
+    // Finalize last mixer insert
+    if mixer_insert_started {
+        current_mixer_plugins.dedup();
+        let has_content = current_mixer_name.is_some() || !current_mixer_plugins.is_empty();
+        if has_content {
+            mixer_tracks.push(FlpMixerTrack {
+                index: mixer_track_index,
+                name: current_mixer_name.take(),
+                color: current_mixer_color.take(),
+                plugins: current_mixer_plugins.drain(..).collect(),
+            });
+        }
+    }
+
+    // Add mixer effect plugins to the global plugin set
+    for mt in &mixer_tracks {
+        for plugin_name in &mt.plugins {
+            if !plugin_name.is_empty() && !plugin_set.contains_key(plugin_name) {
+                plugin_set.insert(plugin_name.clone(), FlpPlugin {
+                    name: plugin_name.clone(),
+                    dll_name: Some("Fruity Wrapper".to_string()),
+                    channel_name: mt.name.clone(),
+                    channel_index: None,
+                    is_instrument: false,
+                    preset_name: None,
+                });
+            }
+        }
+    }
+
+    // Filter out FLRPC internal patterns and sort by index
+    patterns.retain(|p| {
+        !p.name.as_deref().map_or(false, |n| n.starts_with("FLRPC:"))
+    });
+    patterns.sort_by_key(|p| p.index);
+
+    // Also capture samples from generator channels' sample paths
+    // (some channels use built-in FL plugins like Sampler with sample paths)
+
+    Ok(FlpAnalysis {
+        plugins: plugin_set.into_values().collect(),
+        samples: sample_set,
+        channels,
+        mixer_tracks,
+        patterns,
+        fl_version: fl_version_str,
+    })
+}
+
+/// Map channel type integer to string label
+fn channel_type_str(channel_type: u32) -> &'static str {
+    match channel_type {
+        0 => "sampler",
+        2 => "generator",
+        3 => "layer",
+        4 => "audio_clip",
+        5 => "automation",
+        _ => "unknown",
+    }
+}
+
+/// Detect automation clips by name pattern (for FL versions where type isn't set)
+fn is_automation_clip_name(name: &str) -> bool {
+    // FL Studio automation clips typically have names like:
+    // "Balance - PluginName - ParamName", "Fruity Parametric EQ 2 - Band 1 - Frequency"
+    // They always contain " - " separators with parameter descriptions
+    let has_param_pattern = name.contains(" - ") && (
+        name.contains("Volume") || name.contains("Pan") || name.contains("Balance") ||
+        name.contains("Frequency") || name.contains("Gain") || name.contains("Level") ||
+        name.contains("Cutoff") || name.contains("Resonance") || name.contains("Attack") ||
+        name.contains("Release") || name.contains("Threshold") || name.contains("Ratio") ||
+        name.contains("Mix") || name.contains("Amount") || name.contains("Rate") ||
+        name.contains("Time") || name.contains("Depth") || name.contains("Width") ||
+        name.contains("Feedback") || name.contains("Modulation")
+    );
+    has_param_pattern
+}
+
+/// Clean a plugin DLL/VST name to a readable display name
+fn clean_plugin_name(dll_name: &str) -> String {
+    let name = dll_name
+        .trim_end_matches(".dll")
+        .trim_end_matches(".DLL")
+        .trim_end_matches(".vst3")
+        .trim_end_matches(".VST3")
+        .trim_end_matches(".clap")
+        .trim_end_matches(".CLAP")
+        .trim_end_matches("_x64")
+        .trim_end_matches("_X64")
+        .trim_end_matches(" x64")
+        .replace('_', " ");
+
+    // Extract just the filename if it's a full path
+    if let Some(pos) = name.rfind('\\') {
+        name[pos + 1..].to_string()
+    } else if let Some(pos) = name.rfind('/') {
+        name[pos + 1..].to_string()
+    } else {
+        name
+    }
+}
+
+/// Check if a plugin name is the FL Studio VST wrapper (not the actual plugin)
+fn is_fruity_wrapper(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower == "fruity wrapper"
+        || lower.starts_with("fruity wrapper ")
+        || lower.starts_with("fruity wrapper(")
+}
+
+/// Extract the actual VST plugin name from a Fruity Wrapper plugin data blob.
+/// The plugin data contains binary data with embedded strings. We scan for:
+/// 1. DLL paths (VST2) — strings containing ".dll"
+/// 2. VST3 bundle paths — strings containing ".vst3"
+/// 3. CLAP identifiers — strings containing ".clap"
+/// Both ASCII and UTF-16LE encodings are checked.
+/// Extensions may NOT be at the very end of the ASCII run (FL appends length bytes),
+/// so we use `contains()` and truncate after the extension.
+fn extract_vst_name_from_plugin_data(data: &[u8]) -> Option<String> {
+    let mut best_match: Option<String> = None;
+    let extensions = [".dll", ".vst3", ".clap"];
+
+    // Strategy 1: Scan for ASCII strings containing plugin file extensions
+    let mut i = 0;
+    while i < data.len() {
+        if data[i].is_ascii_graphic() || data[i] == b' ' {
+            let start = i;
+            while i < data.len() && (data[i].is_ascii_graphic() || data[i] == b' ') {
+                i += 1;
+            }
+            let s = String::from_utf8_lossy(&data[start..i]).to_string();
+            let lower = s.to_lowercase();
+            for ext in &extensions {
+                if let Some(pos) = lower.find(ext) {
+                    // Truncate at end of extension
+                    let end_pos = pos + ext.len();
+                    let path_str = &s[..end_pos];
+                    if path_str.len() >= 5 {
+                        let filename = path_str.rsplit(|c| c == '\\' || c == '/').next().unwrap_or(path_str);
+                        best_match = Some(filename.to_string());
+                        // Don't break — last match is usually the actual plugin
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    // Strategy 2: Scan UTF-16LE strings for the same extensions
+    if best_match.is_none() && data.len() >= 10 {
+        let mut j = 0;
+        while j + 1 < data.len() {
+            if data[j].is_ascii_graphic() && data[j + 1] == 0 {
+                let start = j;
+                while j + 1 < data.len() && (data[j].is_ascii_graphic() || data[j] == b' ') && data[j + 1] == 0 {
+                    j += 2;
+                }
+                let u16s: Vec<u16> = data[start..j]
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                let s = String::from_utf16_lossy(&u16s);
+                let lower = s.to_lowercase();
+                for ext in &extensions {
+                    if let Some(pos) = lower.find(ext) {
+                        let end_pos = pos + ext.len();
+                        let path_str = &s[..end_pos];
+                        if path_str.len() >= 5 {
+                            let filename = path_str.rsplit(|c| c == '\\' || c == '/').next().unwrap_or(path_str);
+                            best_match = Some(filename.to_string());
+                        }
+                    }
+                }
+            } else {
+                j += 1;
+            }
+        }
+    }
+
+    best_match.map(|name| clean_plugin_name(&name))
+}
+
+/// Resolve the display name for a plugin, using the best available source:
+/// 1. If "Fruity Wrapper", prefer VST name extracted from plugin data blob
+/// 2. Then fall back to channel name (which defaults to plugin name in FL Studio)
+/// 3. Otherwise use the cleaned plugin name
+fn resolve_plugin_display_name(
+    plugin_name: Option<&str>,
+    channel_name: Option<&str>,
+    vst_name_from_data: Option<&str>,
+) -> Option<String> {
+    match plugin_name {
+        Some(pname) if is_fruity_wrapper(pname) => {
+            // Priority: VST name from plugin data > channel name > "Fruity Wrapper"
+            if let Some(vst) = vst_name_from_data {
+                if !vst.is_empty() {
+                    return Some(vst.to_string());
+                }
+            }
+            channel_name.map(|n| n.to_string())
+                .or_else(|| Some(pname.to_string()))
+        }
+        Some(pname) => Some(clean_plugin_name(pname)),
+        None => None,
+    }
+}
+
 /// Parse FL version string like "20.8.4" into (major, minor)
 fn parse_fl_version(version: &str) -> Option<(u32, u32)> {
     let parts: Vec<&str> = version.split('.').collect();
@@ -613,6 +1303,74 @@ pub fn parse_flp_batch_parallel(file_paths: &[String]) -> HashMap<String, serde_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Validate FL 2025.3 parsing with real project (skipped if file not found)
+    #[test]
+    fn test_fl2025_project_33() {
+        let flp_path = r"C:\Users\paulw\Documents\Image-Line\FL Studio\Projects\Project_33\Project_33.flp";
+        if !std::path::Path::new(flp_path).exists() {
+            eprintln!("Skipping: {} not found", flp_path);
+            return;
+        }
+
+        let result = analyze_flp(flp_path);
+        assert!(result.is_ok(), "Failed to analyze: {:?}", result.err());
+        let analysis = result.unwrap();
+
+        // FL Version
+        assert!(analysis.fl_version.as_ref().unwrap().starts_with("25."));
+
+        // Channels
+        assert_eq!(analysis.channels.len(), 5);
+        assert_eq!(analysis.channels[0].name.as_deref(), Some("Analog Lab V"));
+        assert_eq!(analysis.channels[0].channel_type, "generator");
+
+        // Plugins: 1 instrument (Analog Lab V) + samplers + multiple mixer effects
+        assert!(analysis.plugins.len() >= 19, "should have many plugins, got {}", analysis.plugins.len());
+        let plugin_names: Vec<&str> = analysis.plugins.iter().map(|p| p.name.as_str()).collect();
+        assert!(plugin_names.contains(&"Analog Lab V"), "missing Analog Lab V");
+        assert!(plugin_names.contains(&"OTT"), "missing OTT");
+        assert!(plugin_names.contains(&"soothe2"), "missing soothe2");
+        assert!(plugin_names.contains(&"Ozone 11 Dynamics"), "missing Ozone 11 Dynamics");
+        assert!(plugin_names.contains(&"SSL Native Bus Compressor 2"), "missing SSL Native Bus Compressor 2");
+
+        // Samplers should appear as plugins
+        assert!(plugin_names.contains(&"Oversampled_VOLCANO_kick_burning"), "missing sampler: kick");
+        assert!(plugin_names.contains(&"Oversampled_VOLCANO_808_whomp_C#"), "missing sampler: 808");
+
+        // Analog Lab V must be instrument, samplers must be instrument, mixer effects must not
+        let analog_lab = analysis.plugins.iter().find(|p| p.name == "Analog Lab V").unwrap();
+        assert!(analog_lab.is_instrument, "Analog Lab V should be an instrument");
+        let kick = analysis.plugins.iter().find(|p| p.name == "Oversampled_VOLCANO_kick_burning").unwrap();
+        assert!(kick.is_instrument, "Sampler should be marked as instrument");
+        assert_eq!(kick.dll_name.as_deref(), Some("Sampler"));
+        let ott = analysis.plugins.iter().find(|p| p.name == "OTT").unwrap();
+        assert!(!ott.is_instrument, "OTT should be an effect, not instrument");
+
+        // JSON serialization should use camelCase
+        let json = serde_json::to_value(&analysis).unwrap();
+        assert!(json.get("flVersion").is_some(), "should serialize as flVersion (camelCase)");
+        assert!(json.get("mixerTracks").is_some(), "should serialize as mixerTracks (camelCase)");
+        let first_plugin = &json["plugins"][0];
+        assert!(first_plugin.get("isInstrument").is_some(), "should serialize as isInstrument (camelCase)");
+        assert!(first_plugin.get("channelName").is_some(), "should serialize as channelName (camelCase)");
+
+        // Mixer tracks: at least 7 inserts with content
+        assert!(analysis.mixer_tracks.len() >= 7, "should have mixer inserts, got {}", analysis.mixer_tracks.len());
+        // Insert 1 (master bus) should have many effects
+        let insert1 = analysis.mixer_tracks.iter().find(|t| t.index == 1);
+        assert!(insert1.is_some(), "insert 1 should exist");
+        assert!(insert1.unwrap().plugins.len() >= 8, "insert 1 should have many effects");
+
+        // Patterns: should have 6 (after FLRPC filtering)
+        assert_eq!(analysis.patterns.len(), 6, "expected 6 patterns, got {}", analysis.patterns.len());
+        // All patterns should have names
+        assert!(analysis.patterns.iter().all(|p| p.name.is_some()),
+            "all patterns should have names: {:?}", analysis.patterns.iter().map(|p| &p.name).collect::<Vec<_>>());
+        // No FLRPC patterns
+        assert!(!analysis.patterns.iter().any(|p| p.name.as_deref().map_or(false, |n| n.starts_with("FLRPC:"))),
+            "FLRPC pattern should be filtered");
+    }
 
     #[test]
     fn test_read_varint_single_byte() {

@@ -24,9 +24,10 @@ let imageCacheVersion = 0
 const cacheListeners = new Set<() => void>()
 
 /**
- * Load an image from a local file path as a base64 data URL.
- * Falls back to convertFileSrc if the invoke fails.
- * Results are cached.
+ * Load an image from a local file path.
+ * Uses Tauri's asset protocol (convertFileSrc) for zero-copy streaming —
+ * much faster than base64 encoding over IPC.
+ * Falls back to base64 data URL if the asset protocol fails.
  */
 export async function loadImageUrl(filePath: string | null | undefined): Promise<string> {
   if (!filePath) return ""
@@ -34,14 +35,10 @@ export async function loadImageUrl(filePath: string | null | undefined): Promise
   const cached = imageCache.get(filePath)
   if (cached) return cached
   
-  try {
-    const dataUrl: string = await invoke("read_image_base64", { filePath })
-    imageCache.set(filePath, dataUrl)
-    return dataUrl
-  } catch {
-    // Fallback to asset protocol
-    return convertFileSrc(filePath)
-  }
+  // Primary: use Tauri asset protocol (streams file directly to webview, no IPC/base64 overhead)
+  const url = convertFileSrc(filePath)
+  imageCache.set(filePath, url)
+  return url
 }
 
 /**
@@ -109,4 +106,36 @@ export function formatTimeSpentFull(minutes: number | null | undefined): string 
   
   const minLabel = mins === 1 ? 'minute' : 'minutes'
   return `${mins} ${minLabel}`
+}
+
+/**
+ * Sanitize a string to prevent XSS when used in HTML contexts.
+ * Escapes HTML special characters.
+ */
+export function sanitizeHtml(input: string): string {
+  const map: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#x27;',
+    '/': '&#x2F;',
+  }
+  return input.replace(/[&<>"'/]/g, (char) => map[char] || char)
+}
+
+/**
+ * Sanitize user input for database queries.
+ * Strips null bytes and control characters.
+ */
+export function sanitizeInput(input: string): string {
+  return input.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim()
+}
+
+/**
+ * Validate a file path is safe (no path traversal).
+ */
+export function isPathSafe(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/')
+  return !normalized.includes('..') && !normalized.startsWith('/')
 }

@@ -1,5 +1,6 @@
 import React from 'react';
 import { FilterOptions } from '@shared/types';
+import { useI18n } from '@/i18n';
 import './SearchFilter.css';
 
 interface SearchFilterProps {
@@ -13,6 +14,7 @@ export const SearchFilter: React.FC<SearchFilterProps> = ({
   onFilterChange, 
   availableTags 
 }) => {
+  const { t } = useI18n();
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onFilterChange({ ...filters, searchQuery: e.target.value });
   };
@@ -38,6 +40,7 @@ export const SearchFilter: React.FC<SearchFilterProps> = ({
       dawFilter: null,
       genreFilter: null,
       artistFilter: null,
+      recordingFilter: null,
     });
   };
 
@@ -57,7 +60,7 @@ export const SearchFilter: React.FC<SearchFilterProps> = ({
         </svg>
         <input
           type="text"
-          placeholder="Search projects..."
+          placeholder={t('searchFilter.search')}
           value={filters.searchQuery}
           onChange={handleSearchChange}
         />
@@ -76,17 +79,17 @@ export const SearchFilter: React.FC<SearchFilterProps> = ({
 
       <div className="filter-controls">
         <div className="sort-control">
-          <label>Sort by:</label>
+          <label>{t('searchFilter.sortBy')}</label>
           <select value={filters.sortBy} onChange={handleSortChange}>
-            <option value="date-newest">Newest first</option>
-            <option value="date-oldest">Oldest first</option>
-            <option value="name-asc">Name (A-Z)</option>
-            <option value="name-desc">Name (Z-A)</option>
-            <option value="bpm-asc">BPM (Low-High)</option>
-            <option value="bpm-desc">BPM (High-Low)</option>
-            <option value="time-spent-asc">Time Spent (Low-High)</option>
-            <option value="time-spent-desc">Time Spent (High-Low)</option>
-            <option value="key">Key</option>
+            <option value="date-newest">{t('sort.newest')}</option>
+            <option value="date-oldest">{t('sort.oldest')}</option>
+            <option value="name-asc">{t('sort.nameAsc')}</option>
+            <option value="name-desc">{t('sort.nameDesc')}</option>
+            <option value="bpm-asc">{t('sort.bpmAsc')}</option>
+            <option value="bpm-desc">{t('sort.bpmDesc')}</option>
+            <option value="time-spent-asc">{t('sort.timeAsc')}</option>
+            <option value="time-spent-desc">{t('sort.timeDesc')}</option>
+            <option value="key">{t('sort.key')}</option>
           </select>
         </div>
 
@@ -95,14 +98,14 @@ export const SearchFilter: React.FC<SearchFilterProps> = ({
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M18 6L6 18M6 6l12 12"/>
             </svg>
-            Clear filters
+            {t('searchFilter.clearFilters')}
           </button>
         )}
       </div>
 
       {availableTags.length > 0 && (
         <div className="tag-filters">
-          <span className="tag-filters-label">Tags:</span>
+          <span className="tag-filters-label">{t('searchFilter.tags')}</span>
           <div className="tag-filters-list">
             {availableTags.map(tag => (
               <button

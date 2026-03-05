@@ -51,6 +51,9 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const initialSeekTimeRef = useRef<number>(0) // Track initial seek position for restore
   const waveformRequestRef = useRef(0)
+  // Local time state - kept separate from playerState to avoid re-rendering the entire app tree (~4Hz)
+  const [localCurrentTime, setLocalCurrentTime] = useState(0)
+  const [localDuration, setLocalDuration] = useState(0)
   const [isReady, setIsReady] = useState(false)
   const [repeatMode, setRepeatMode] = useState<RepeatMode>("off")
   const [isShuffled, setIsShuffled] = useState(false)
@@ -130,9 +133,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
         audioRef.current.addEventListener('loadedmetadata', () => {
           setIsReady(true)
+          const dur = audioRef.current?.duration || 0
+          setLocalDuration(dur)
           setPlayerState((prev) => ({
             ...prev,
-            duration: audioRef.current?.duration || 0,
+            duration: dur,
           }))
           // Seek to initial position if we have one (e.g., restoring from ProjectDetail)
           if (initialSeekTimeRef.current > 0 && audioRef.current) {
@@ -146,10 +151,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
         audioRef.current.addEventListener('timeupdate', () => {
           if (audioRef.current) {
-            setPlayerState((prev) => ({
-              ...prev,
-              currentTime: audioRef.current?.currentTime || 0,
-            }))
+            // Only update local state - do NOT update playerState to avoid re-rendering the entire tree
+            setLocalCurrentTime(audioRef.current.currentTime || 0)
           }
         })
 
@@ -226,10 +229,15 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     loadWaveform()
   }, [playerState.currentTrack?.audioPreviewPath])
 
-  // Draw waveform on canvas
-  const drawWaveform = useCallback(() => {
+  // Draw waveform on canvas - uses a ref to avoid recreating the callback on every time tick
+  const drawWaveformRef = useRef<() => void>(() => {})
+  const waveformDepsRef = useRef({ peaks: waveformPeaks, accentColor, localDuration })
+  waveformDepsRef.current = { peaks: waveformPeaks, accentColor, localDuration }
+
+  drawWaveformRef.current = () => {
     const canvas = canvasRef.current
-    if (!canvas || waveformPeaks.length === 0) return
+    const { peaks, accentColor: color, localDuration: dur } = waveformDepsRef.current
+    if (!canvas || peaks.length === 0) return
 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
@@ -243,34 +251,50 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
     const width = rect.width
     const height = rect.height
-    const barWidth = Math.max(2, width / waveformPeaks.length - 1)
-    const gap = 1
-    const progress = playerState.duration > 0 ? playerState.currentTime / playerState.duration : 0
+    const barWidth = Math.max(2, width / peaks.length - 1)
+    const progress = dur > 0 ? localCurrentTime / dur : 0
 
     ctx.clearRect(0, 0, width, height)
 
-    waveformPeaks.forEach((peak, i) => {
-      const x = (i / waveformPeaks.length) * width
+    peaks.forEach((peak, i) => {
+      const x = (i / peaks.length) * width
       const barHeight = Math.max(2, peak * height * 0.9)
       const y = (height - barHeight) / 2
 
-      const isPlayed = (i / waveformPeaks.length) < progress
-      ctx.fillStyle = isPlayed ? accentColor : hexToRgba(accentColor, 0.3)
+      const isPlayed = (i / peaks.length) < progress
+      ctx.fillStyle = isPlayed ? color : hexToRgba(color, 0.3)
       ctx.fillRect(x, y, barWidth, barHeight)
     })
-  }, [waveformPeaks, playerState.currentTime, playerState.duration, accentColor])
+  }
 
-  // Redraw waveform when needed
+  // Redraw waveform at display refresh rate using rAF, only while playing
+  const waveformRafRef = useRef(0)
   useEffect(() => {
-    drawWaveform()
-  }, [drawWaveform, isExpanded])
+    // Always draw once when peaks/expanded/accent change
+    drawWaveformRef.current()
 
-  // Redraw on resize
+    if (!playerState.isPlaying) return
+
+    let running = true
+    const tick = () => {
+      if (!running) return
+      drawWaveformRef.current()
+      waveformRafRef.current = requestAnimationFrame(tick)
+    }
+    waveformRafRef.current = requestAnimationFrame(tick)
+    return () => { running = false; cancelAnimationFrame(waveformRafRef.current) }
+  }, [waveformPeaks, accentColor, isExpanded, playerState.isPlaying])
+
+  // Redraw on resize (throttled)
   useEffect(() => {
-    const handleResize = () => drawWaveform()
+    let rafId = 0
+    const handleResize = () => {
+      cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(() => drawWaveformRef.current())
+    }
     window.addEventListener('resize', handleResize)
-    return () => window.removeEventListener('resize', handleResize)
-  }, [drawWaveform])
+    return () => { window.removeEventListener('resize', handleResize); cancelAnimationFrame(rafId) }
+  }, [])
 
   useEffect(() => {
     if (!audioRef.current || !isReady) return
@@ -334,6 +358,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       audioRef.current.pause()
       audioRef.current.currentTime = 0
     }
+    setLocalCurrentTime(0)
     setPlayerState((prev) => ({
       ...prev,
       isPlaying: false,
@@ -344,11 +369,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const handlePrevious = () => {
     if (!playerState.currentTrack) return
     
-    if (playerState.currentTime > 3) {
+    if (localCurrentTime > 3) {
       if (audioRef.current) {
         audioRef.current.currentTime = 0
       }
-      setPlayerState((prev) => ({ ...prev, currentTime: 0 }))
+      setLocalCurrentTime(0)
       return
     }
     
@@ -401,7 +426,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     const progress = (e.clientX - rect.left) / rect.width
     const newTime = progress * (audioRef.current.duration || 0)
     audioRef.current.currentTime = newTime
-    setPlayerState((prev) => ({ ...prev, currentTime: newTime }))
+    setLocalCurrentTime(newTime)
   }
 
   const handleClose = () => {
@@ -409,6 +434,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       audioRef.current.pause()
       audioRef.current.currentTime = 0
     }
+    setLocalCurrentTime(0)
+    setLocalDuration(0)
     setPlayerState({
       isPlaying: false,
       currentTrack: null,
@@ -457,7 +484,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
           transition={{ type: "spring", damping: 25, stiffness: 300 }}
           className={cn(
             "px-4 flex flex-col relative flex-shrink-0",
-            "bg-card/95 backdrop-blur-xl border-t border-border/30",
+            "bg-card border-t border-border/30",
             "shadow-2xl shadow-black/20",
             isExpanded ? "h-36" : "h-20"
           )}
@@ -490,16 +517,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                 )}
                 {playerState.isPlaying && (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-                    <div className="flex gap-0.5">
-                      {[...Array(3)].map((_, i) => (
-                        <motion.div
-                          key={i}
-                          className="w-1 bg-primary rounded-full"
-                          animate={{ height: [8, 16, 8] }}
-                          transition={{ duration: 0.5, repeat: Infinity, delay: i * 0.1 }}
-                        />
-                      ))}
-                    </div>
+                    <Pause className="w-4 h-4 text-white" />
                   </div>
                 )}
               </button>
@@ -594,7 +612,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
             </div>
 
             <div className="flex-1 flex items-center gap-3 min-w-0">
-              <span className="text-xs text-muted-foreground font-mono w-10 text-right">{formatTime(playerState.currentTime)}</span>
+              <span className="text-xs text-muted-foreground font-mono w-10 text-right">{formatTime(localCurrentTime)}</span>
               <div
                 className={cn("flex-1 cursor-pointer rounded-lg overflow-hidden bg-muted/30 relative", isExpanded ? "h-20" : "h-12")}
                 onClick={handleSeek}
@@ -614,7 +632,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                   <>
                     <div
                       className="absolute top-0 left-0 h-full bg-primary/60 transition-all duration-100"
-                      style={{ width: `${playerState.duration > 0 ? (playerState.currentTime / playerState.duration) * 100 : 0}%` }}
+                      style={{ width: `${localDuration > 0 ? (localCurrentTime / localDuration) * 100 : 0}%` }}
                     />
                     <div className="absolute inset-0 flex items-center justify-center">
                       <div className="w-full h-0.5 bg-muted-foreground/20 rounded"></div>
@@ -622,7 +640,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                   </>
                 )}
               </div>
-              <span className="text-xs text-muted-foreground font-mono w-10">{formatTime(playerState.duration)}</span>
+              <span className="text-xs text-muted-foreground font-mono w-10">{formatTime(localDuration)}</span>
             </div>
 
             <div className="flex items-center gap-2">

@@ -1,4 +1,4 @@
-import { Project, ProjectGroup, Task, Tag, AppSettings, AudioVersion, Annotation, ArtworkHistoryEntry } from '@shared/types';
+import { Project, ProjectGroup, Task, Tag, AppSettings, AudioVersion, Annotation, ArtworkHistoryEntry, PluginSession, PluginEvent, FlpAnalysis, UserProfile, ProjectShare, OnboardingState } from '@shared/types';
 
 declare global {
   interface Window {
@@ -34,6 +34,7 @@ declare global {
       updateTask: (id: string, task: Partial<Task>) => Promise<Task>;
       deleteTask: (id: string) => Promise<void>;
       reorderTasks: (tasks: { id: string; order: number; status: Task['status'] }[]) => Promise<void>;
+      reorderProjects: (projects: { id: string; sortOrder: number }[]) => Promise<boolean>;
       
       // Tags
       getTags: () => Promise<Tag[]>;
@@ -47,6 +48,8 @@ declare global {
       updateVersion: (id: string, version: Partial<AudioVersion>) => Promise<AudioVersion>;
       deleteVersion: (id: string) => Promise<void>;
       
+      getProjectVersionSources: () => Promise<Record<string, string[]>>;
+      
       // Annotations
       getAnnotationsByVersion: (versionId: string) => Promise<Annotation[]>;
       createAnnotation: (annotation: Omit<Annotation, 'id' | 'createdAt' | 'updatedAt'>) => Promise<Annotation>;
@@ -59,7 +62,7 @@ declare global {
       selectProject: () => Promise<string | null>;
       selectFolder: () => Promise<string | null>;
       readDir: (folderPath: string) => Promise<string[]>;
-      detectProjects: (folderPath: string) => Promise<{ hasFLP: boolean; hasALS: boolean }>;
+      detectProjects: (folderPath: string) => Promise<{ hasFLP: boolean; hasALS: boolean; detectedDAWs: string[] }>;
       loadAudioFile: (filePath: string) => Promise<ArrayBuffer>;
       computeAudioPeaks: (filePath: string, numPeaks?: number) => Promise<number[]>;
       getCachedPeaks: (filePath: string, numPeaks?: number) => Promise<number[] | null>;
@@ -70,6 +73,8 @@ declare global {
       scanFLStudioFolder: (folderPath: string) => Promise<{ count: number }>;
       // Ableton scanning
       scanAbletonFolder: (folderPath: string) => Promise<{ count: number }>;
+      // Generic DAW scanning (Logic Pro, Pro Tools, Cubase, Studio One, Bitwig, Reaper, etc.)
+      scanDAWFolder: (folderPath: string, dawName: string) => Promise<{ count: number }>;
       updateFileModDates: () => Promise<{ count: number }>;
       updateDawTypes: () => Promise<{ count: number }>;
       
@@ -100,8 +105,52 @@ declare global {
       getSettings: () => Promise<AppSettings>;
       setSettings: (settings: Partial<AppSettings>) => Promise<void>;
       
+      // Plugin sessions
+      getPluginSessions: () => Promise<PluginSession[]>;
+      getPluginSessionsForProject: (projectId: string) => Promise<PluginSession[]>;
+      linkPluginToProject: (sessionId: string, projectId: string) => Promise<boolean>;
+      unlinkPluginFromProject: (sessionId: string) => Promise<boolean>;
+      requestPluginStartRecording: (sessionId: string) => Promise<boolean>;
+      requestPluginStopRecording: (sessionId: string) => Promise<boolean>;
+      getPluginServerPort: () => Promise<number>;
+      sendProjectListToPlugin: (sessionId: string) => Promise<boolean>;
+      importPluginRecording: (sessionId: string, projectId: string, sourceFilePath: string, name: string, source?: string, peakDb?: number | null, rmsDb?: number | null) => Promise<AudioVersion>;
+      onPluginEvent: (callback: (payload: PluginEvent) => void) => Promise<() => void>;
+
+      // Recordings management
+      deleteProjectRecordings: (projectId: string) => Promise<{ success: boolean; versionsDeleted: number; filesDeleted: number }>;
+      deleteAllRecordings: () => Promise<{ success: boolean; versionsDeleted: number; filesDeleted: number }>;
+
+      // Audio Analysis
+      analyzeAudioVersion: (versionId: string) => Promise<any>;
+      getAudioAnalysis: (versionId: string) => Promise<any | null>;
+
       // Database management
       clearAllProjects: () => Promise<number>;
+
+      // FLP Analysis
+      analyzeFlpProject: (projectId: string, flpPath: string) => Promise<FlpAnalysis>;
+      clearFlpAnalysisCache: (projectId: string) => Promise<void>;
+      captureWindowScreenshot: (windowTitle: string) => Promise<string>;
+
+      // User Profile
+      getUserProfile: () => Promise<UserProfile | null>;
+      updateUserProfile: (profile: Partial<UserProfile>) => Promise<void>;
+
+      // Collaboration / Shares
+      createProjectShare: (projectId: string, sharedWithName: string, permission: string) => Promise<ProjectShare>;
+      getProjectShares: (projectId: string) => Promise<ProjectShare[]>;
+      deleteProjectShare: (shareId: string) => Promise<void>;
+
+      // Onboarding
+      getOnboardingState: () => Promise<OnboardingState | null>;
+      updateOnboardingState: (state: Partial<OnboardingState>) => Promise<void>;
+
+      // Annotation ↔ Task conversion
+      convertAnnotationToTask: (annotationId: string) => Promise<void>;
+      unconvertAnnotationFromTask: (annotationId: string) => Promise<void>;
+      updateAnnotationTask: (annotationId: string, data: { taskStatus?: string; taskPriority?: string; taskDueDate?: string }) => Promise<void>;
+      getTaskAnnotationsByProject: (projectId: string) => Promise<Annotation[]>;
       
       // App operations
       getAppVersion: () => Promise<string>;

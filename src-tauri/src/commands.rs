@@ -12,6 +12,7 @@ pub struct DbState(pub Mutex<Database>);
 pub struct SettingsState(pub Mutex<AppSettings>);
 pub struct AppDataDir(pub PathBuf);
 pub struct PhotoCancelFlag(pub AtomicBool);
+pub struct PluginServerHandle(pub std::sync::Arc<crate::websocket::PluginServerState>);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +42,8 @@ pub struct AppSettings {
     pub grid_size: String,
     #[serde(rename = "unsplashEnabled")]
     pub unsplash_enabled: bool,
+    #[serde(rename = "sampleFolders", default)]
+    pub sample_folders: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -59,6 +62,7 @@ impl Default for AppSettings {
             view_mode: "grid".to_string(),
             grid_size: "medium".to_string(),
             unsplash_enabled: true,
+            sample_folders: vec![],
         }
     }
 }
@@ -108,9 +112,33 @@ pub fn create_project(db: State<DbState>, project: Value) -> Result<crate::datab
 }
 
 #[tauri::command]
-pub fn update_project(db: State<DbState>, id: String, project: Value) -> Result<Option<crate::database::Project>, String> {
-    let database = db.0.lock().map_err(|e| e.to_string())?;
-    database.update_project(&id, &project)
+pub async fn update_project(
+    db: State<'_, DbState>,
+    plugin_server: State<'_, PluginServerHandle>,
+    id: String,
+    project: Value,
+) -> Result<Option<crate::database::Project>, String> {
+    let updated = {
+        let database = db.0.lock().map_err(|e| e.to_string())?;
+        database.update_project(&id, &project)?
+    };
+
+    // Push updated project info to any VST plugins linked to this project
+    if let Some(ref p) = updated {
+        let project_info = crate::websocket::ProjectInfo {
+            id: p.id.clone(),
+            title: p.title.clone(),
+            status: p.status.clone(),
+            bpm: p.bpm,
+            musical_key: p.musical_key.clone(),
+            artwork_path: p.artwork_path.clone(),
+            daw_type: p.daw_type.clone(),
+            collection_name: p.collection_name.clone(),
+        };
+        plugin_server.0.notify_project_updated(project_info).await;
+    }
+
+    Ok(updated)
 }
 
 #[tauri::command]
@@ -190,6 +218,12 @@ pub fn delete_task(db: State<DbState>, id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+pub fn reorder_projects(db: State<DbState>, projects: Vec<Value>) -> Result<bool, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.reorder_projects(&projects)
+}
+
+#[tauri::command]
 pub fn reorder_tasks(db: State<DbState>, tasks: Vec<Value>) -> Result<bool, String> {
     let database = db.0.lock().map_err(|e| e.to_string())?;
     database.reorder_tasks(&tasks)
@@ -245,6 +279,13 @@ pub fn update_version(db: State<DbState>, id: String, version: Value) -> Result<
 pub fn delete_version(db: State<DbState>, id: String) -> Result<bool, String> {
     let database = db.0.lock().map_err(|e| e.to_string())?;
     database.delete_version(&id)
+}
+
+/// Get version sources grouped by project ID for filtering
+#[tauri::command]
+pub fn get_project_version_sources(db: State<DbState>) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.get_project_version_sources()
 }
 
 // ============ ANNOTATION COMMANDS ============
@@ -303,6 +344,53 @@ pub fn set_settings(
 
 // ============ FILE OPERATION COMMANDS ============
 
+/// Scan sample root folders and return a tree of folder → Set<child_folder_name>.
+/// This lets the frontend know the REAL directory structure for pack detection.
+/// Returns a JSON object: { "folderPath": ["child1", "child2", ...], ... }
+/// We scan up to 3 levels deep from each root.
+#[tauri::command]
+pub fn scan_sample_tree(roots: Vec<String>) -> Result<serde_json::Value, String> {
+    use std::collections::HashMap;
+    let mut tree: HashMap<String, Vec<String>> = HashMap::new();
+
+    fn scan_level(dir: &Path, tree: &mut HashMap<String, Vec<String>>, depth: u32, max_depth: u32) {
+        if depth > max_depth {
+            return;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let mut children = Vec::new();
+        let mut child_paths = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    children.push(name.to_string());
+                    child_paths.push(path);
+                }
+            }
+        }
+        if !children.is_empty() {
+            let key = dir.to_string_lossy().replace('\\', "/");
+            tree.insert(key, children);
+        }
+        for child_path in child_paths {
+            scan_level(&child_path, tree, depth + 1, max_depth);
+        }
+    }
+
+    for root in &roots {
+        let root_path = Path::new(root);
+        if root_path.is_dir() {
+            scan_level(root_path, &mut tree, 0, 3);
+        }
+    }
+
+    serde_json::to_value(tree).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn read_dir_contents(folder_path: String) -> Result<Vec<String>, String> {
     let entries = fs::read_dir(&folder_path).map_err(|e| e.to_string())?;
@@ -319,38 +407,106 @@ pub fn read_dir_contents(folder_path: String) -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub fn detect_projects(folder_path: String) -> Result<Value, String> {
-    let mut has_flp = false;
-    let mut has_als = false;
+    let mut detected_daws: Vec<String> = Vec::new();
 
-    fn scan(dir: &Path, has_flp: &mut bool, has_als: &mut bool) {
+    // All known DAW extensions (lowercase)
+    let daw_extension_map: Vec<(&str, &[&str])> = vec![
+        ("FL Studio", &["flp"]),
+        ("Ableton Live", &["als"]),
+        ("Logic Pro", &["logicx"]),
+        ("Pro Tools", &["ptx", "pts"]),
+        ("Cubase", &["cpr"]),
+        ("Fender Studio Pro", &["song"]),
+        ("Bitwig Studio", &["bwproject"]),
+        ("Reaper", &["rpp"]),
+        ("Reason", &["reason"]),
+        ("GarageBand", &["band"]),
+        ("LMMS", &["mmp", "mmpz"]),
+        ("Cakewalk", &["cwp"]),
+    ];
+
+    // Package extensions (directories that count as projects)
+    let package_exts: Vec<&str> = vec!["logicx", "band"];
+
+    fn scan(
+        dir: &Path,
+        daw_ext_map: &[(&str, &[&str])],
+        pkg_exts: &[&str],
+        detected: &mut Vec<String>,
+        has_flp_zip: &mut bool,
+    ) {
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    scan(&path, has_flp, has_als);
+                    // Check if directory IS a package project (.logicx, .band)
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        let ext_lower = ext.to_lowercase();
+                        if pkg_exts.contains(&ext_lower.as_str()) {
+                            for (daw_name, exts) in daw_ext_map {
+                                if exts.contains(&ext_lower.as_str())
+                                    && !detected.contains(&daw_name.to_string())
+                                {
+                                    detected.push(daw_name.to_string());
+                                }
+                            }
+                            continue; // Don't recurse into package dirs
+                        }
+                    }
+                    scan(&path, daw_ext_map, pkg_exts, detected, has_flp_zip);
                 } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    match ext.to_lowercase().as_str() {
-                        "flp" => *has_flp = true,
-                        "als" => *has_als = true,
-                        "zip" => {
-                            // Check if zip contains FLP files
-                            if !*has_flp && scanner::zip_contains_flp_quick(&path.to_string_lossy()) {
-                                *has_flp = true;
+                    let ext_lower = ext.to_lowercase();
+                    if ext_lower == "zip" {
+                        if !*has_flp_zip
+                            && scanner::zip_contains_flp_quick(&path.to_string_lossy())
+                        {
+                            *has_flp_zip = true;
+                            if !detected.contains(&"FL Studio".to_string()) {
+                                detected.push("FL Studio".to_string());
                             }
                         }
-                        _ => {}
+                    } else {
+                        for (daw_name, exts) in daw_ext_map {
+                            if exts.contains(&ext_lower.as_str())
+                                && !detected.contains(&daw_name.to_string())
+                            {
+                                detected.push(daw_name.to_string());
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    scan(Path::new(&folder_path), &mut has_flp, &mut has_als);
-    Ok(serde_json::json!({ "hasFLP": has_flp, "hasALS": has_als }))
+    let mut has_flp_zip = false;
+    scan(
+        Path::new(&folder_path),
+        &daw_extension_map,
+        &package_exts,
+        &mut detected_daws,
+        &mut has_flp_zip,
+    );
+
+    // Keep backward-compatible hasFLP/hasALS fields and add detectedDAWs list
+    let has_flp = detected_daws.contains(&"FL Studio".to_string());
+    let has_als = detected_daws.contains(&"Ableton Live".to_string());
+
+    Ok(serde_json::json!({
+        "hasFLP": has_flp,
+        "hasALS": has_als,
+        "detectedDAWs": detected_daws,
+    }))
 }
 
 #[tauri::command]
-pub fn open_in_daw(file_path: String, settings: State<SettingsState>) -> Result<Value, String> {
+pub async fn open_in_daw(
+    file_path: String,
+    settings: State<'_, SettingsState>,
+    db: State<'_, DbState>,
+    plugin_server: State<'_, PluginServerHandle>,
+    project_id: Option<String>,
+) -> Result<Value, String> {
     // For .zip files, open with FL Studio directly instead of the OS default
     // (which would open a zip archiver). FL Studio natively supports opening .zip
     // files that contain .flp projects.
@@ -370,7 +526,12 @@ pub fn open_in_daw(file_path: String, settings: State<SettingsState>) -> Result<
         if let Some(fl_exe) = fl_path {
             if Path::new(&fl_exe).exists() {
                 match std::process::Command::new(&fl_exe).arg(&file_path).spawn() {
-                    Ok(_) => return Ok(serde_json::json!({ "success": true })),
+                    Ok(_) => {
+                        if let Some(ref pid) = project_id {
+                            auto_link_plugins_to_project(&db, &plugin_server, pid).await;
+                        }
+                        return Ok(serde_json::json!({ "success": true }));
+                    }
                     Err(e) => {
                         return Ok(serde_json::json!({
                             "success": false,
@@ -382,7 +543,12 @@ pub fn open_in_daw(file_path: String, settings: State<SettingsState>) -> Result<
         }
         // Fallback: if FL Studio path is not set, try open::that and return a hint
         return match open::that(&file_path) {
-            Ok(_) => Ok(serde_json::json!({ "success": true })),
+            Ok(_) => {
+                if let Some(ref pid) = project_id {
+                    auto_link_plugins_to_project(&db, &plugin_server, pid).await;
+                }
+                Ok(serde_json::json!({ "success": true }))
+            }
             Err(_) => Ok(serde_json::json!({
                 "success": false,
                 "error": "Set your FL Studio path in Settings to open .zip projects directly in FL Studio"
@@ -390,10 +556,20 @@ pub fn open_in_daw(file_path: String, settings: State<SettingsState>) -> Result<
         };
     }
 
-    match open::that(&file_path) {
-        Ok(_) => Ok(serde_json::json!({ "success": true })),
-        Err(e) => Ok(serde_json::json!({ "success": false, "error": e.to_string() })),
+    let open_result = match open::that(&file_path) {
+        Ok(_) => serde_json::json!({ "success": true }),
+        Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
+    };
+
+    // Auto-link: when a project is opened through DBundone, link all unlinked
+    // plugin sessions to this project automatically
+    if let Some(ref pid) = project_id {
+        if open_result.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+            auto_link_plugins_to_project(&db, &plugin_server, pid).await;
+        }
     }
+
+    Ok(open_result)
 }
 
 #[tauri::command]
@@ -1182,6 +1358,156 @@ pub async fn scan_ableton_folder(
     Ok(serde_json::json!({ "count": added_count }))
 }
 
+/// Map a DAW name to its file extensions (lowercase, no dots).
+fn daw_extensions(daw_name: &str) -> Vec<&'static str> {
+    match daw_name {
+        "FL Studio" => vec!["flp"],
+        "Ableton Live" => vec!["als"],
+        "Logic Pro" => vec!["logicx"],
+        "Pro Tools" => vec!["ptx", "pts"],
+        "Cubase" => vec!["cpr"],
+        "Studio One" | "Fender Studio Pro" => vec!["song"],
+        "Bitwig Studio" => vec!["bwproject"],
+        "Reaper" => vec!["rpp"],
+        "Reason" => vec!["reason"],
+        "GarageBand" => vec!["band"],
+        "LMMS" => vec!["mmp", "mmpz"],
+        "Cakewalk" => vec!["cwp"],
+        _ => vec![],
+    }
+}
+
+/// Generic scan command for any DAW that doesn't have specialized metadata extraction.
+/// Works for Logic Pro, Pro Tools, Cubase, Studio One, Bitwig, Reaper, Reason,
+/// GarageBand, LMMS, Cakewalk, and also serves as fallback for Ableton Live.
+#[tauri::command]
+pub async fn scan_daw_folder(
+    app: AppHandle,
+    db: State<'_, DbState>,
+    settings: State<'_, SettingsState>,
+    folder_path: String,
+    daw_name: String,
+) -> Result<Value, String> {
+    let extensions = daw_extensions(&daw_name);
+    if extensions.is_empty() {
+        return Err(format!("Unknown DAW: {}", daw_name));
+    }
+
+    let exclude_autosaves = {
+        let s = settings.0.lock().map_err(|e| e.to_string())?;
+        s.exclude_autosaves
+    };
+
+    let all_files = scanner::scan_for_project_files(&folder_path, &extensions, None);
+    let primary_ext = extensions[0];
+    let project_files = if exclude_autosaves {
+        scanner::filter_autosaves(&all_files, primary_ext)
+    } else {
+        all_files
+    };
+
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    let existing_projects = database.get_projects()?;
+    let mut existing_map = std::collections::HashMap::new();
+    for p in &existing_projects {
+        if let Some(ref path) = p.daw_project_path {
+            existing_map.insert(path.clone(), p.clone());
+        }
+    }
+
+    let mut added_count = 0i64;
+    let total = project_files.len();
+
+    for (i, file_path) in project_files.iter().enumerate() {
+        app.emit(
+            "scan-progress",
+            serde_json::json!({
+                "current": i + 1,
+                "total": total,
+                "daw": &daw_name,
+                "file": Path::new(file_path).file_name().unwrap_or_default().to_string_lossy(),
+                "isScanning": true,
+                "phase": "saving_projects"
+            }),
+        )
+        .ok();
+
+        let project_name = Path::new(file_path)
+            .file_stem()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or("Untitled");
+
+        let file_stats = fs::metadata(file_path).ok();
+        let file_modified = file_stats
+            .as_ref()
+            .and_then(|s| s.modified().ok())
+            .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+        let file_created = file_stats
+            .as_ref()
+            .and_then(|s| s.created().ok())
+            .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+
+        if let Some(existing) = existing_map.get(file_path) {
+            // Update timestamps for existing project
+            let mut updates = serde_json::Map::new();
+            if let Some(ref fm) = file_modified {
+                updates.insert("fileModifiedAt".to_string(), serde_json::json!(fm));
+                updates.insert("updatedAt".to_string(), serde_json::json!(fm));
+            }
+            if let Some(ref fc) = file_created {
+                updates.insert("createdAt".to_string(), serde_json::json!(fc));
+            }
+            if !updates.is_empty() {
+                let _ = database.update_project(&existing.id, &Value::Object(updates));
+            }
+        } else {
+            let artwork_path = scanner::find_artwork_file(file_path, project_name);
+            let collection_name = Path::new(file_path)
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("Unknown");
+
+            let project_data = serde_json::json!({
+                "title": project_name,
+                "artworkPath": artwork_path,
+                "audioPreviewPath": null,
+                "dawProjectPath": file_path,
+                "dawType": &daw_name,
+                "bpm": 0,
+                "musicalKey": "None",
+                "tags": [],
+                "collectionName": collection_name,
+                "status": "idea",
+                "favoriteVersionId": null,
+                "archived": false,
+                "fileModifiedAt": file_modified,
+                "createdAt": file_created.as_deref().unwrap_or(&chrono::Utc::now().to_rfc3339()),
+                "updatedAt": file_modified.as_deref().unwrap_or(&chrono::Utc::now().to_rfc3339()),
+            });
+
+            let _ = database.create_project(&project_data);
+            added_count += 1;
+        }
+    }
+
+    app.emit(
+        "scan-progress",
+        serde_json::json!({
+            "current": total,
+            "total": total,
+            "daw": &daw_name,
+            "file": format!("Scan complete! Added {} projects", added_count),
+            "isScanning": false,
+            "phase": "complete"
+        }),
+    )
+    .ok();
+
+    Ok(serde_json::json!({ "count": added_count }))
+}
+
 #[tauri::command]
 pub fn update_file_mod_dates(db: State<DbState>) -> Result<Value, String> {
     let database = db.0.lock().map_err(|e| e.to_string())?;
@@ -1713,6 +2039,764 @@ pub fn set_artwork_from_history(
     )
 }
 
+// ============ AUTO-LINK HELPER ============
+
+/// When a project is opened through DBundone, auto-link all connected but
+/// unlinked plugin sessions to that project. This mimics the original dbdone
+/// behavior where opening a project automatically associates the VST plugin.
+async fn auto_link_plugins_to_project(
+    db: &State<'_, DbState>,
+    plugin_server: &State<'_, PluginServerHandle>,
+    project_id: &str,
+) {
+    let project = {
+        let database = match db.0.lock() {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        match database.get_project(project_id) {
+            Ok(Some(p)) => p,
+            _ => return,
+        }
+    };
+
+    let project_info = crate::websocket::ProjectInfo {
+        id: project.id.clone(),
+        title: project.title,
+        status: project.status,
+        bpm: project.bpm,
+        musical_key: project.musical_key,
+        artwork_path: project.artwork_path,
+        daw_type: project.daw_type,
+        collection_name: project.collection_name,
+    };
+
+    let sessions = plugin_server.0.get_sessions().await;
+    for session in sessions {
+        // Link sessions that are either unlinked or already linked to a different project
+        // (opening a new project should switch the active link)
+        if session.linked_project_id.as_deref() != Some(project_id) {
+            let _ = plugin_server
+                .0
+                .link_session_to_project(
+                    &session.session_id,
+                    project_id,
+                    project_info.clone(),
+                )
+                .await;
+        }
+    }
+}
+
+// ============ PLUGIN SESSION COMMANDS ============
+
+#[tauri::command]
+pub async fn get_plugin_sessions(
+    plugin_server: State<'_, PluginServerHandle>,
+) -> Result<Vec<crate::websocket::PluginSession>, String> {
+    Ok(plugin_server.0.get_sessions().await)
+}
+
+#[tauri::command]
+pub async fn get_plugin_sessions_for_project(
+    plugin_server: State<'_, PluginServerHandle>,
+    project_id: String,
+) -> Result<Vec<crate::websocket::PluginSession>, String> {
+    Ok(plugin_server.0.get_sessions_for_project(&project_id).await)
+}
+
+#[tauri::command]
+pub async fn link_plugin_to_project(
+    plugin_server: State<'_, PluginServerHandle>,
+    db: State<'_, DbState>,
+    session_id: String,
+    project_id: String,
+) -> Result<bool, String> {
+    // Get project info to send to the plugin
+    let project = {
+        let database = db.0.lock().map_err(|e| e.to_string())?;
+        database.get_project(&project_id)?
+    };
+
+    let project = project.ok_or_else(|| format!("Project {} not found", project_id))?;
+
+    let project_info = crate::websocket::ProjectInfo {
+        id: project.id,
+        title: project.title,
+        status: project.status,
+        bpm: project.bpm,
+        musical_key: project.musical_key,
+        artwork_path: project.artwork_path,
+        daw_type: project.daw_type,
+        collection_name: project.collection_name,
+    };
+
+    plugin_server
+        .0
+        .link_session_to_project(&session_id, &project_id, project_info)
+        .await?;
+
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn unlink_plugin_from_project(
+    plugin_server: State<'_, PluginServerHandle>,
+    session_id: String,
+) -> Result<bool, String> {
+    plugin_server.0.unlink_session(&session_id).await?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn request_plugin_start_recording(
+    plugin_server: State<'_, PluginServerHandle>,
+    session_id: String,
+) -> Result<bool, String> {
+    plugin_server
+        .0
+        .request_start_recording(&session_id)
+        .await?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn request_plugin_stop_recording(
+    plugin_server: State<'_, PluginServerHandle>,
+    session_id: String,
+) -> Result<bool, String> {
+    plugin_server
+        .0
+        .request_stop_recording(&session_id)
+        .await?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn get_plugin_server_port(
+    plugin_server: State<'_, PluginServerHandle>,
+) -> Result<u16, String> {
+    let port = plugin_server.0.port.read().await;
+    Ok(*port)
+}
+
+#[tauri::command]
+pub async fn send_project_list_to_plugin(
+    plugin_server: State<'_, PluginServerHandle>,
+    db: State<'_, DbState>,
+    session_id: String,
+) -> Result<bool, String> {
+    let projects = {
+        let database = db.0.lock().map_err(|e| e.to_string())?;
+        database.get_projects()?
+    };
+
+    let project_infos: Vec<crate::websocket::ProjectInfo> = projects
+        .into_iter()
+        .map(|p| crate::websocket::ProjectInfo {
+            id: p.id,
+            title: p.title,
+            status: p.status,
+            bpm: p.bpm,
+            musical_key: p.musical_key,
+            artwork_path: p.artwork_path,
+            daw_type: p.daw_type,
+            collection_name: p.collection_name,
+        })
+        .collect();
+
+    plugin_server
+        .0
+        .send_to_session(
+            &session_id,
+            crate::websocket::ServerMessage::ProjectList {
+                projects: project_infos,
+            },
+        )
+        .await?;
+
+    Ok(true)
+}
+
+/// Import a recorded audio file from a plugin as an AudioVersion
+#[tauri::command]
+pub async fn import_plugin_recording(
+    db: State<'_, DbState>,
+    plugin_server: State<'_, PluginServerHandle>,
+    app_data: State<'_, AppDataDir>,
+    session_id: String,
+    project_id: String,
+    source_file_path: String,
+    name: String,
+    // "auto", "manual", or "offline" — defaults to "auto" if not provided
+    source: Option<String>,
+    // Audio analysis data from the plugin recorder
+    peak_db: Option<f64>,
+    rms_db: Option<f64>,
+) -> Result<crate::database::AudioVersion, String> {
+    let recording_source = source.unwrap_or_else(|| "auto".to_string());
+    log::info!(
+        "Importing plugin recording: source_file={}, project={}, name={}, source={}",
+        source_file_path, project_id, name, recording_source
+    );
+
+    // Verify source file exists before attempting to copy
+    let source_path = std::path::Path::new(&source_file_path);
+    if !source_path.exists() {
+        let err_msg = format!(
+            "Source recording file does not exist: {}",
+            source_file_path
+        );
+        log::error!("{}", err_msg);
+        return Err(err_msg);
+    }
+
+    let source_size = std::fs::metadata(source_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    log::info!("Source file size: {} bytes", source_size);
+
+    if source_size == 0 {
+        let err_msg = format!(
+            "Source recording file is empty (0 bytes): {}",
+            source_file_path
+        );
+        log::error!("{}", err_msg);
+        return Err(err_msg);
+    }
+
+    // Copy the recording to the app's recordings directory to ensure persistence
+    let recordings_dir = app_data.0.join("recordings").join(&project_id);
+    std::fs::create_dir_all(&recordings_dir).map_err(|e| {
+        let err_msg = format!("Failed to create recordings directory {}: {}", recordings_dir.display(), e);
+        log::error!("{}", err_msg);
+        err_msg
+    })?;
+
+    let file_name = std::path::Path::new(&source_file_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| format!("{}.wav", uuid::Uuid::new_v4()));
+
+    let dest_path = recordings_dir.join(&file_name);
+    log::info!("Copying recording to: {}", dest_path.display());
+
+    std::fs::copy(&source_file_path, &dest_path).map_err(|e| {
+        let err_msg = format!(
+            "Failed to copy recording from {} to {}: {}",
+            source_file_path,
+            dest_path.display(),
+            e
+        );
+        log::error!("{}", err_msg);
+        err_msg
+    })?;
+
+    log::info!("Recording copied successfully to {}", dest_path.display());
+
+    let dest_path_str = dest_path.to_string_lossy().to_string();
+
+    // Create the audio version in the database
+    let version_json = serde_json::json!({
+        "projectId": project_id,
+        "name": name,
+        "filePath": dest_path_str,
+        "source": recording_source,
+        "notes": format!("Recorded via VST3 plugin (session: {})", session_id),
+        "peakDb": peak_db,
+        "rmsDb": rms_db,
+    });
+
+    let version = {
+        let database = db.0.lock().map_err(|e| e.to_string())?;
+        database.create_version(&version_json)?
+    };
+
+    // Notify the plugin that the recording was imported
+    let _ = plugin_server
+        .0
+        .send_to_session(
+            &session_id,
+            crate::websocket::ServerMessage::RecordingImported {
+                version_id: version.id.clone(),
+                version_number: version.version_number,
+            },
+        )
+        .await;
+
+    Ok(version)
+}
+
+/// Start auto-record for a plugin session.
+/// This command is called by the frontend when the user enables auto-record.
+#[tauri::command]
+pub async fn start_auto_record(
+    plugin_server: State<'_, PluginServerHandle>,
+    session_id: String,
+) -> Result<bool, String> {
+    // Send StartRecording to the plugin
+    plugin_server
+        .0
+        .request_start_recording(&session_id)
+        .await?;
+    Ok(true)
+}
+
+/// Stop auto-record for a plugin session.
+/// This command is called by the frontend when the user disables auto-record.
+#[tauri::command]
+pub async fn stop_auto_record(
+    plugin_server: State<'_, PluginServerHandle>,
+    session_id: String,
+) -> Result<bool, String> {
+    // Send StopRecording to the plugin
+    plugin_server
+        .0
+        .request_stop_recording(&session_id)
+        .await?;
+    Ok(true)
+}
+
+/// Start offline record for a plugin session.
+/// This command is called by the frontend when the user enables offline record.
+#[tauri::command]
+pub async fn start_offline_record(
+    plugin_server: State<'_, PluginServerHandle>,
+    session_id: String,
+) -> Result<bool, String> {
+    // Send StartRecording to the plugin
+    plugin_server
+        .0
+        .request_start_recording(&session_id)
+        .await?;
+    Ok(true)
+}
+
+/// Stop offline record for a plugin session.
+/// This command is called by the frontend when the user disables offline record.
+#[tauri::command]
+pub async fn stop_offline_record(
+    plugin_server: State<'_, PluginServerHandle>,
+    session_id: String,
+) -> Result<bool, String> {
+    // Send StopRecording to the plugin
+    plugin_server
+        .0
+        .request_stop_recording(&session_id)
+        .await?;
+    Ok(true)
+}
+
+/// Delete all recordings for a specific project (DB entries + files on disk)
+#[tauri::command]
+pub fn delete_project_recordings(
+    db: State<DbState>,
+    app_data: State<AppDataDir>,
+    project_id: String,
+) -> Result<Value, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    let deleted_versions = database.delete_versions_by_project(&project_id)?;
+    drop(database);
+
+    let mut files_deleted = 0;
+    for version in &deleted_versions {
+        let path = std::path::Path::new(&version.file_path);
+        if path.exists() && path.is_file() {
+            if std::fs::remove_file(path).is_ok() {
+                files_deleted += 1;
+            }
+        }
+    }
+
+    // Also remove the project's recordings subdirectory if it exists and is empty
+    let project_dir = app_data.0.join("recordings").join(&project_id);
+    if project_dir.exists() {
+        // Remove the directory only if it's empty after deleting files
+        let _ = std::fs::remove_dir(&project_dir);
+    }
+
+    log::info!(
+        "Deleted recordings for project {}: {} DB entries, {} files",
+        project_id, deleted_versions.len(), files_deleted
+    );
+
+    Ok(serde_json::json!({
+        "success": true,
+        "versionsDeleted": deleted_versions.len(),
+        "filesDeleted": files_deleted,
+    }))
+}
+
+/// Delete all recordings across all projects (DB entries + files on disk)
+#[tauri::command]
+pub fn delete_all_recordings(
+    db: State<DbState>,
+    app_data: State<AppDataDir>,
+) -> Result<Value, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    let deleted_versions = database.delete_all_versions()?;
+    drop(database);
+
+    let mut files_deleted = 0;
+    for version in &deleted_versions {
+        let path = std::path::Path::new(&version.file_path);
+        if path.exists() && path.is_file() {
+            if std::fs::remove_file(path).is_ok() {
+                files_deleted += 1;
+            }
+        }
+    }
+
+    // Clean up the recordings directory
+    let recordings_dir = app_data.0.join("recordings");
+    if recordings_dir.exists() {
+        // Remove all subdirectories (per-project folders)
+        if let Ok(entries) = std::fs::read_dir(&recordings_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+    }
+
+    log::info!(
+        "Deleted all recordings: {} DB entries, {} files",
+        deleted_versions.len(), files_deleted
+    );
+
+    Ok(serde_json::json!({
+        "success": true,
+        "versionsDeleted": deleted_versions.len(),
+        "filesDeleted": files_deleted,
+    }))
+}
+
+// ============ PERSISTENT PROJECT LINKING ============
+
+/// Get the project ID that a plugin session was last linked to.
+/// This is used for auto-relinking when the plugin reconnects.
+#[tauri::command]
+pub async fn get_plugin_last_project_id(
+    plugin_server: State<'_, PluginServerHandle>,
+    session_id: String,
+) -> Result<Option<String>, String> {
+    let sessions = plugin_server.0.get_sessions().await;
+    for session in sessions {
+        if session.session_id == session_id {
+            return Ok(session.last_project_id);
+        }
+    }
+    Ok(None)
+}
+
+/// Store the project ID that a plugin session was last linked to.
+/// This is called when a plugin links to a project.
+#[tauri::command]
+pub async fn set_plugin_last_project_id(
+    plugin_server: State<'_, PluginServerHandle>,
+    session_id: String,
+    project_id: String,
+) -> Result<bool, String> {
+    let mut sessions = plugin_server.0.sessions.write().await;
+    if let Some(session) = sessions.get_mut(&session_id) {
+        session.last_project_id = Some(project_id.clone());
+        // Also update linked_project_id to maintain consistency
+        session.linked_project_id = Some(project_id);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Get all plugin sessions that were last linked to a specific project.
+/// This is used for auto-relinking when a project is opened.
+#[tauri::command]
+pub async fn get_plugins_for_project(
+    plugin_server: State<'_, PluginServerHandle>,
+    project_id: String,
+) -> Result<Vec<crate::websocket::PluginSession>, String> {
+    let sessions = plugin_server.0.get_sessions().await;
+    Ok(sessions
+        .into_iter()
+        .filter(|s| s.last_project_id.as_deref() == Some(&project_id))
+        .collect())
+}
+
+/// Auto-link all plugin sessions that were last linked to a project.
+/// This is called when a project is opened.
+#[tauri::command]
+pub async fn auto_link_plugins_for_project(
+    plugin_server: State<'_, PluginServerHandle>,
+    db: State<'_, DbState>,
+    project_id: String,
+) -> Result<bool, String> {
+    // Get project info
+    let project = {
+        let database = db.0.lock().map_err(|e| e.to_string())?;
+        database.get_project(&project_id)?
+    };
+
+    let project = project.ok_or_else(|| format!("Project {} not found", project_id))?;
+
+    let project_info = crate::websocket::ProjectInfo {
+        id: project.id,
+        title: project.title,
+        status: project.status,
+        bpm: project.bpm,
+        musical_key: project.musical_key,
+        artwork_path: project.artwork_path,
+        daw_type: project.daw_type,
+        collection_name: project.collection_name,
+    };
+
+    // Get all sessions that were last linked to this project
+    let sessions = plugin_server.0.get_sessions().await;
+    let sessions_to_link: Vec<_> = sessions
+        .into_iter()
+        .filter(|s| s.last_project_id.as_deref() == Some(&project_id))
+        .collect();
+
+    // Link each session
+    for session in sessions_to_link {
+        let _ = plugin_server
+            .0
+            .link_session_to_project(&session.session_id, &project_id, project_info.clone())
+            .await;
+    }
+
+    Ok(true)
+}
+
+// ============ FLP ANALYSIS (EXTENDED) ============
+
+#[tauri::command]
+pub fn analyze_flp_project(
+    db: State<DbState>,
+    project_id: String,
+    file_path: String,
+) -> Result<serde_json::Value, String> {
+    // Check cache first
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    if let Ok(Some(cached)) = database.get_flp_analysis_cache(&project_id) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&cached) {
+            return Ok(val);
+        }
+    }
+    drop(database);
+
+    // Run analysis
+    let analysis = crate::flp_parser::analyze_flp(&file_path)?;
+    let json = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
+    let json_str = serde_json::to_string(&analysis).map_err(|e| e.to_string())?;
+
+    // Cache the result
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    let _ = database.save_flp_analysis_cache(&project_id, &json_str);
+
+    Ok(json)
+}
+
+#[tauri::command]
+pub fn clear_flp_analysis_cache(
+    db: State<DbState>,
+    project_id: String,
+) -> Result<bool, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    let conn_guard = database.conn.lock().unwrap();
+    conn_guard
+        .execute("DELETE FROM flp_analysis_cache WHERE project_id = ?", rusqlite::params![project_id])
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+// ============ USER PROFILE ============
+
+#[tauri::command]
+pub fn get_user_profile(db: State<DbState>) -> Result<crate::database::UserProfile, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.get_user_profile()
+}
+
+#[tauri::command]
+pub fn update_user_profile(
+    db: State<DbState>,
+    profile: serde_json::Value,
+) -> Result<crate::database::UserProfile, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.update_user_profile(&profile)
+}
+
+// ============ COLLABORATION / SHARES ============
+
+#[tauri::command]
+pub fn create_project_share(
+    db: State<DbState>,
+    project_id: String,
+    permissions: Option<String>,
+    message: Option<String>,
+) -> Result<crate::database::ProjectShare, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    let profile = database.get_user_profile().ok();
+    let created_by = profile.map(|p| p.display_name);
+    database.create_share(
+        &project_id,
+        permissions.as_deref().unwrap_or("view"),
+        message.as_deref(),
+        created_by.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn get_project_shares(
+    db: State<DbState>,
+    project_id: String,
+) -> Result<Vec<crate::database::ProjectShare>, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.get_shares_by_project(&project_id)
+}
+
+#[tauri::command]
+pub fn delete_project_share(
+    db: State<DbState>,
+    id: String,
+) -> Result<bool, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.delete_share(&id)
+}
+
+// ============ ONBOARDING ============
+
+#[tauri::command]
+pub fn get_onboarding_state(db: State<DbState>) -> Result<crate::database::OnboardingState, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.get_onboarding_state()
+}
+
+#[tauri::command]
+pub fn update_onboarding_state(
+    db: State<DbState>,
+    state: serde_json::Value,
+) -> Result<bool, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.update_onboarding_state(&state)?;
+    Ok(true)
+}
+
+// ============ ANNOTATION-TASK CONVERSION ============
+
+#[tauri::command]
+pub fn convert_annotation_to_task(
+    db: State<DbState>,
+    annotation_id: String,
+) -> Result<crate::database::Annotation, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.convert_annotation_to_task(&annotation_id)
+}
+
+#[tauri::command]
+pub fn unconvert_annotation_from_task(
+    db: State<DbState>,
+    annotation_id: String,
+) -> Result<crate::database::Annotation, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.unconvert_annotation_from_task(&annotation_id)
+}
+
+#[tauri::command]
+pub fn update_annotation_task(
+    db: State<DbState>,
+    annotation_id: String,
+    data: serde_json::Value,
+) -> Result<crate::database::Annotation, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.update_annotation_task(&annotation_id, &data)
+}
+
+#[tauri::command]
+pub fn get_task_annotations_by_project(
+    db: State<DbState>,
+    project_id: String,
+) -> Result<Vec<crate::database::Annotation>, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.get_task_annotations_by_project(&project_id)
+}
+
+// ============ PLUGIN SCREENSHOT (Windows) ============
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn capture_window_screenshot(
+    window_title: String,
+    app_data_dir: State<AppDataDir>,
+) -> Result<String, String> {
+    use std::process::Command;
+
+    let screenshots_dir = app_data_dir.0.join("screenshots");
+    fs::create_dir_all(&screenshots_dir).map_err(|e| e.to_string())?;
+
+    let filename = format!("screenshot_{}.png", chrono::Utc::now().format("%Y%m%d_%H%M%S"));
+    let output_path = screenshots_dir.join(&filename);
+
+    // Use PowerShell to capture window screenshot
+    let script = format!(
+        r#"
+        Add-Type -AssemblyName System.Windows.Forms
+        Add-Type -AssemblyName System.Drawing
+        $processes = Get-Process | Where-Object {{ $_.MainWindowTitle -like '*{}*' }}
+        if ($processes.Count -gt 0) {{
+            $hwnd = $processes[0].MainWindowHandle
+            Add-Type @'
+            using System;
+            using System.Runtime.InteropServices;
+            public class WinAPI {{
+                [DllImport("user32.dll")]
+                public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+                [StructLayout(LayoutKind.Sequential)]
+                public struct RECT {{ public int Left, Top, Right, Bottom; }}
+            }}
+'@
+            $rect = New-Object WinAPI+RECT
+            [WinAPI]::GetWindowRect($hwnd, [ref]$rect)
+            $w = $rect.Right - $rect.Left
+            $h = $rect.Bottom - $rect.Top
+            if ($w -gt 0 -and $h -gt 0) {{
+                $bitmap = New-Object System.Drawing.Bitmap($w, $h)
+                $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+                $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, (New-Object System.Drawing.Size($w, $h)))
+                $bitmap.Save('{}')
+                $graphics.Dispose()
+                $bitmap.Dispose()
+                Write-Output 'OK'
+            }}
+        }}
+        "#,
+        window_title.replace('\'', "''"),
+        output_path.to_string_lossy().replace('\\', "\\\\").replace('\'', "''"),
+    );
+
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .map_err(|e| format!("Failed to run screenshot: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.contains("OK") {
+        Ok(output_path.to_string_lossy().to_string())
+    } else {
+        Err("Could not capture screenshot - window not found or not visible".to_string())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub fn capture_window_screenshot(
+    _window_title: String,
+    _app_data_dir: State<AppDataDir>,
+) -> Result<String, String> {
+    Err("Screenshot capture is only supported on Windows".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1928,4 +3012,86 @@ mod tests {
         assert_eq!(result["hasALS"], true);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+// ============ AUDIO ANALYSIS ============
+
+/// Analyze an audio version: compute LUFS, peak dB, RMS dB, and per-frame loudness.
+/// Saves a .analysis.json sidecar file and updates the DB record.
+#[tauri::command]
+pub async fn analyze_audio_version(
+    db: State<'_, DbState>,
+    version_id: String,
+) -> Result<crate::audio_analysis::AudioAnalysis, String> {
+    // Get the version to find the file path
+    let version = {
+        let database = db.0.lock().map_err(|e| e.to_string())?;
+        database.get_version(&version_id)?
+    }
+    .ok_or_else(|| format!("Audio version not found: {}", version_id))?;
+
+    let file_path = version.file_path.clone();
+
+    // Run analysis on a blocking thread
+    let analysis =
+        tokio::task::spawn_blocking(move || crate::audio_analysis::analyze_audio_file(&file_path))
+            .await
+            .map_err(|e| format!("Task join error: {}", e))??;
+
+    // Save sidecar JSON
+    let analysis_path =
+        crate::audio_analysis::save_analysis_sidecar(&version.file_path, &analysis)?;
+
+    // Update database with analysis results
+    {
+        let database = db.0.lock().map_err(|e| e.to_string())?;
+        database.update_version_analysis(
+            &version_id,
+            analysis.peak_db,
+            analysis.rms_db,
+            analysis.lufs_integrated,
+            &analysis_path,
+        )?;
+    }
+
+    log::info!(
+        "Audio analysis complete for version {}: peak={:.1}dB, rms={:.1}dB, lufs={:.1}",
+        version_id,
+        analysis.peak_db,
+        analysis.rms_db,
+        analysis.lufs_integrated
+    );
+
+    Ok(analysis)
+}
+
+/// Get the per-frame analysis data for an audio version (from sidecar file).
+#[tauri::command]
+pub async fn get_audio_analysis(
+    db: State<'_, DbState>,
+    version_id: String,
+) -> Result<Option<crate::audio_analysis::AudioAnalysis>, String> {
+    let version = {
+        let database = db.0.lock().map_err(|e| e.to_string())?;
+        database.get_version(&version_id)?
+    }
+    .ok_or_else(|| format!("Audio version not found: {}", version_id))?;
+
+    // Check if analysis sidecar exists
+    let analysis_path = if let Some(ref path) = version.analysis_path {
+        path.clone()
+    } else {
+        format!("{}.analysis.json", version.file_path)
+    };
+
+    if !std::path::Path::new(&analysis_path).exists() {
+        return Ok(None);
+    }
+
+    let json = std::fs::read_to_string(&analysis_path)
+        .map_err(|e| format!("Failed to read analysis file: {}", e))?;
+    let analysis: crate::audio_analysis::AudioAnalysis =
+        serde_json::from_str(&json).map_err(|e| format!("Failed to parse analysis: {}", e))?;
+
+    Ok(Some(analysis))
 }

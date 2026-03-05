@@ -1,0 +1,34 @@
+[package]
+name = "dbundone-bridge"
+version = "1.0.0"
+description = "DBundone VST3 Bridge Plugin - Record audio from your DAW directly into DBundone projects"
+authors = ["DBundone"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["assert_process_allocs"] }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+
+# WebSocket client for communicating with DBundone app
+tungstenite = "0.21"
+url = "2"
+
+# Audio file writing
+hound = "3.5"
+
+# Serialization for the WebSocket protocol
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+
+# For background threads
+atomic_float = "0.1"

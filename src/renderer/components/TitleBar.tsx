@@ -3,12 +3,14 @@ import { Minus, Square, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Logo } from "./Logo"
 import { getCurrentWindow } from "@tauri-apps/api/window"
+import { useI18n } from "@/i18n"
 
 interface TitleBarProps {
   className?: string
 }
 
 export const TitleBar: React.FC<TitleBarProps> = ({ className }) => {
+  const { t } = useI18n()
   const handleMinimize = (e: React.MouseEvent) => {
     e.stopPropagation()
     e.preventDefault()
@@ -30,7 +32,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ className }) => {
   return (
     <div
       className={cn(
-        "h-12 flex items-center justify-between bg-background/80 backdrop-blur-xl border-b border-border/30 relative",
+        "h-12 flex items-center justify-between bg-background border-b border-border/30 relative",
         className
       )}
     >
@@ -58,21 +60,21 @@ export const TitleBar: React.FC<TitleBarProps> = ({ className }) => {
         <button
           onMouseDown={handleMinimize}
           className="group p-2 rounded-lg transition-all duration-200 hover:bg-muted/60"
-          aria-label="Minimize"
+          aria-label={t('titleBar.minimize')}
         >
           <Minus className="w-4 h-4 text-muted-foreground group-hover:text-foreground transition-colors pointer-events-none" />
         </button>
         <button
           onMouseDown={handleMaximize}
           className="group p-2 rounded-lg transition-all duration-200 hover:bg-muted/60"
-          aria-label="Maximize"
+          aria-label={t('titleBar.maximize')}
         >
           <Square className="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground transition-colors pointer-events-none" />
         </button>
         <button
           onMouseDown={handleClose}
           className="group p-2 rounded-lg transition-all duration-200 hover:bg-red-500/20"
-          aria-label="Close"
+          aria-label={t('titleBar.close')}
         >
           <X className="w-4 h-4 text-muted-foreground group-hover:text-red-400 transition-colors pointer-events-none" />
         </button>

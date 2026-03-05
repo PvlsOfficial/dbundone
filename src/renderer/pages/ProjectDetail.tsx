@@ -30,6 +30,10 @@ import {
   CheckCircle2,
   PartyPopper,
   Archive,
+  Share2,
+  ListTodo,
+  BarChart3,
+  Plug,
 } from "lucide-react"
 import { cn, assetUrl } from "@/lib/utils"
 import { useImageUrl } from "@/hooks/useImageUrl"
@@ -50,9 +54,24 @@ import {
   SelectTrigger,
   SelectValue,
   Separator,
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  TabsContent,
 } from "@/components/ui"
 import { Waveform } from "@/components/Waveform"
-import { Project, ProjectStatus, AudioVersion, Annotation, AudioPlayerState, Tag } from "@shared/types"
+import PluginStatus, { PluginStatusIcon } from "@/components/PluginStatus"
+import { ProjectAnalysis } from "@/components/ProjectAnalysis"
+import { ProjectKanban } from "@/components/ProjectKanban"
+import { CollaborationPanel } from "@/components/CollaborationPanel"
+import { useAuth } from "@/contexts/AuthContext"
+import { syncVersionToShares } from "@/lib/sharingService"
+import { Project, ProjectStatus, AudioVersion, Annotation, AudioPlayerState, Tag, PluginSession, Task } from "@shared/types"
 
 // Helper to convert hex to rgba
 const hexToRgba = (hex: string, alpha: number) => {
@@ -73,6 +92,14 @@ interface ProjectDetailProps {
   tags: Tag[]
   onCreateTag: (name: string, color?: string) => Promise<Tag | null>
   onOpenArtworkManager?: (project: Project) => void
+  // Plugin integration
+  pluginSessions?: PluginSession[]
+  projects?: Project[]
+  onLinkPlugin?: (sessionId: string, projectId: string) => Promise<void>
+  onUnlinkPlugin?: (sessionId: string) => Promise<void>
+  onStartPluginRecording?: (sessionId: string) => Promise<void>
+  onStopPluginRecording?: (sessionId: string) => Promise<void>
+  onToggleOfflineCapture?: (sessionId: string, enabled: boolean) => void
 }
 
 const ANNOTATION_COLORS = [
@@ -122,6 +149,13 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
   tags,
   onCreateTag,
   onOpenArtworkManager,
+  pluginSessions = [],
+  projects = [],
+  onLinkPlugin,
+  onUnlinkPlugin,
+  onStartPluginRecording,
+  onStopPluginRecording,
+  onToggleOfflineCapture,
 }) => {
 
 
@@ -133,6 +167,9 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
 
   // Get theme accent color (must be before any conditional returns)
   const { accentColor } = useTheme()
+
+  // Auth context for auto-syncing versions to shared projects
+  const { isAuthenticated, user, profile } = useAuth()
 
   // Early return if project is not available
   if (!project) {
@@ -159,6 +196,10 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
   const [optimisticArtworkPath, setOptimisticArtworkPath] = useState<string | null | undefined>(undefined)
   const [optimisticFavoriteId, setOptimisticFavoriteId] = useState<string | null | undefined>(undefined)
   const [optimisticProject, setOptimisticProject] = useState<Project | null>(null)
+  const [showDeleteAllVersionsConfirm, setShowDeleteAllVersionsConfirm] = useState(false)
+  const [isDeletingAllVersions, setIsDeletingAllVersions] = useState(false)
+  const [analyzingVersionId, setAnalyzingVersionId] = useState<string | null>(null)
+  const [versionSourceFilter, setVersionSourceFilter] = useState<"all" | "manual" | "auto" | "offline">("all")
   
   // Editing states
   const [editingAnnotation, setEditingAnnotation] = useState<string | null>(null)
@@ -225,11 +266,61 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
   const [duration, setDuration] = useState(0)
   const [volume, setVolume] = useState(0.8)
 
+  // Task state for project kanban
+  const [projectTasks, setProjectTasks] = useState<Task[]>([])
+  const [taskAnnotations, setTaskAnnotations] = useState<Annotation[]>([])
+
+  const loadProjectTasks = useCallback(async () => {
+    if (!isElectron() || !project?.id) return
+    try {
+      const tasks = await window.electron?.getTasks() || []
+      setProjectTasks(tasks.filter((t: Task) => t.projectId === project.id))
+      const annTasks = await window.electron?.getTaskAnnotationsByProject(project.id) || []
+      setTaskAnnotations(annTasks)
+    } catch (e) {
+      console.error("Failed to load project tasks:", e)
+    }
+  }, [project?.id])
+
+  useEffect(() => {
+    loadProjectTasks()
+  }, [loadProjectTasks])
+
 
   // Load versions
   useEffect(() => {
     if (project?.id) {
       loadVersions()
+    }
+  }, [project?.id])
+
+  // Listen for plugin recording imports to reload versions
+  useEffect(() => {
+    if (!project?.id) return
+    let cancelled = false
+    let unlisten: (() => void) | null = null
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      if (cancelled) return
+      listen("plugin-event", (event: any) => {
+        const pluginEvent = event.payload
+        if (
+          pluginEvent.type === "pluginRecordingComplete" &&
+          pluginEvent.projectId === project.id
+        ) {
+          // A recording was completed for this project — wait briefly for the
+          // import to finish in App.tsx, then reload versions
+          setTimeout(() => {
+            loadVersions()
+          }, 1500)
+        }
+      }).then((fn) => {
+        if (cancelled) { fn(); return }
+        unlisten = fn
+      })
+    }).catch(() => {})
+    return () => {
+      cancelled = true
+      unlisten?.()
     }
   }, [project?.id])
 
@@ -357,8 +448,13 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
           name: "Main Preview",
           filePath: project.audioPreviewPath,
           notes: null,
+          source: "manual" as const,
           versionNumber: 0,
           createdAt: project.createdAt,
+          peakDb: null,
+          rmsDb: null,
+          lufsIntegrated: null,
+          analysisPath: null,
         })
       } else if (data && data.length > 0) {
         setSelectedVersion(data[0])
@@ -437,6 +533,7 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
           name: filename,
           filePath,
           notes: null,
+          source: "manual",
         })
         if (version) {
           await loadVersions()
@@ -446,6 +543,18 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
           if (willAutoStar) {
             setOptimisticFavoriteId(version.id)
             await window.electron?.updateProject(project.id, { favoriteVersionId: version.id })
+          }
+          
+          // Auto-sync to shared projects (fire-and-forget)
+          if (isAuthenticated && user) {
+            syncVersionToShares(user.id, profile?.displayName || user.email || 'Unknown', project.id, {
+              name: version.name || filename,
+              filePath: version.filePath,
+              versionNumber: version.versionNumber || versions.length + 1,
+              isFavorite: !!willAutoStar,
+            }).then(count => {
+              if (count > 0) console.log(`[Sync] Auto-synced new version to ${count} share(s)`)
+            }).catch(e => console.warn('[Sync] Auto-sync failed:', e))
           }
           
           // Refresh project data to sync with database
@@ -485,6 +594,20 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
     }
   }, [project.favoriteVersionId, optimisticFavoriteId])
 
+  const handleAnalyzeVersion = async (versionId: string) => {
+    if (!isElectron() || versionId === "main") return
+    setAnalyzingVersionId(versionId)
+    try {
+      await window.electron?.analyzeAudioVersion(versionId)
+      // Reload versions to get updated analysis data
+      await loadVersions(true)
+    } catch (error) {
+      console.error("Failed to analyze version:", error)
+    } finally {
+      setAnalyzingVersionId(null)
+    }
+  }
+
   const handleDeleteVersion = async (versionId: string) => {
     if (!isElectron() || versionId === "main") return
     if (!confirm("Delete this version and all its annotations?")) return
@@ -519,8 +642,13 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
             name: "Main Preview",
             filePath: project.audioPreviewPath,
             notes: null,
+            source: "manual" as const,
             versionNumber: 0,
             createdAt: project.createdAt,
+            peakDb: null,
+            rmsDb: null,
+            lufsIntegrated: null,
+            analysisPath: null,
           })
         } else {
           setSelectedVersion(null)
@@ -531,6 +659,44 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
       onRefresh()
     } catch (error) {
       console.error("Failed to delete version:", error)
+    }
+  }
+
+  const handleDeleteAllVersions = async () => {
+    if (!isElectron()) return
+    setIsDeletingAllVersions(true)
+    try {
+      await window.electron?.deleteProjectRecordings(project.id)
+      // Stop playback
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current.currentTime = 0
+      }
+      setIsPlaying(false)
+      setCurrentTime(0)
+      setDuration(0)
+      setSelectedVersion(project.audioPreviewPath ? {
+        id: "main",
+        projectId: project.id,
+        name: "Main Preview",
+        filePath: project.audioPreviewPath,
+        notes: null,
+        source: "manual" as const,
+        versionNumber: 0,
+        createdAt: project.createdAt,
+        peakDb: null,
+        rmsDb: null,
+        lufsIntegrated: null,
+        analysisPath: null,
+      } : null)
+      setAnnotations([])
+      await loadVersions()
+      onRefresh()
+    } catch (error) {
+      console.error("Failed to delete all recordings:", error)
+    } finally {
+      setIsDeletingAllVersions(false)
+      setShowDeleteAllVersionsConfirm(false)
     }
   }
 
@@ -774,6 +940,9 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
                   <span>Created: {new Date(displayProject.createdAt).toLocaleDateString()}</span>
                   <span>•</span>
                   <span>Updated: {new Date(displayProject.updatedAt).toLocaleDateString()}</span>
+                  {/* Plugin Bridge Icon — always visible */}
+                  <span>•</span>
+                  <PluginStatusIcon sessions={pluginSessions} currentProjectId={project.id} pluginLinked={project.pluginLinked} />
                 </div>
                 {displayProject.tags && displayProject.tags.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-2">
@@ -1132,20 +1301,119 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
           )}
         </AnimatePresence>
 
-        {/* Main Content */}
-        <ScrollArea className="flex-1">
-          <div className="p-6 space-y-6">
+        {/* Main Content — Tabbed */}
+        <Tabs defaultValue="audio" className="flex-1 flex flex-col overflow-hidden">
+          <div className="px-6 pt-4 pb-0 border-b border-border/30 bg-card/30">
+            <TabsList className="h-9 bg-transparent p-0 gap-1">
+              <TabsTrigger value="audio" data-tour-tab="pd-audio" className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary gap-1.5 text-xs px-3">
+                <FileAudio className="w-3.5 h-3.5" />
+                Audio
+                <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-1">{versions.length + (project.audioPreviewPath ? 1 : 0)}</Badge>
+              </TabsTrigger>
+              {project.dawType?.toLowerCase().includes("fl studio") && project.dawProjectPath && (
+                <TabsTrigger value="analysis" className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary gap-1.5 text-xs px-3">
+                  <BarChart3 className="w-3.5 h-3.5" />
+                  Analysis
+                </TabsTrigger>
+              )}
+              <TabsTrigger value="tasks" data-tour-tab="pd-tasks" className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary gap-1.5 text-xs px-3">
+                <ListTodo className="w-3.5 h-3.5" />
+                Tasks
+                {projectTasks.length > 0 && (
+                  <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-1">{projectTasks.length}</Badge>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="collaboration" data-tour-tab="pd-collaboration" className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary gap-1.5 text-xs px-3">
+                <Share2 className="w-3.5 h-3.5" />
+                Sharing
+              </TabsTrigger>
+              <TabsTrigger value="plugin" data-tour-tab="pd-plugin" className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary gap-1.5 text-xs px-3">
+                <Plug className="w-3.5 h-3.5" />
+                VST Plugin
+                {pluginSessions.filter(s => s.linkedProjectId === project.id).length > 0 && (
+                  <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-1">
+                    {pluginSessions.filter(s => s.linkedProjectId === project.id).length}
+                  </Badge>
+                )}
+              </TabsTrigger>
+            </TabsList>
+          </div>
+
+          {/* Audio Tab */}
+          <TabsContent value="audio" className="flex-1 overflow-hidden mt-0">
+            <ScrollArea className="h-full">
+              <div className="p-6 space-y-6">
             {/* Version Selector & Add Version */}
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold flex items-center gap-2">
-                <FileAudio className="w-5 h-5 text-primary" />
-                Audio Versions
-                <Badge variant="secondary">{versions.length + (project.audioPreviewPath ? 1 : 0)}</Badge>
-              </h2>
-              <Button onClick={handleAddVersion} size="sm" className="gap-2">
-                <Plus className="w-4 h-4" />
-                Add Version
-              </Button>
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg font-semibold flex items-center gap-2">
+                  <FileAudio className="w-5 h-5 text-primary" />
+                  Audio Versions
+                  <Badge variant="secondary">{versions.length + (project.audioPreviewPath ? 1 : 0)}</Badge>
+                </h2>
+                {/* Source filter tabs */}
+                {versions.length > 0 && (
+                  <div className="flex items-center gap-0.5 bg-muted/30 rounded-lg p-0.5">
+                    {([
+                      { key: "all", label: "All" },
+                      { key: "manual", label: "Manual" },
+                      { key: "auto", label: "Recordings" },
+                      { key: "offline", label: "Renders" },
+                    ] as const).map(({ key, label }) => (
+                      <button
+                        key={key}
+                        onClick={() => setVersionSourceFilter(key)}
+                        className={cn(
+                          "px-2 py-0.5 text-[10px] font-medium rounded-md transition-all",
+                          versionSourceFilter === key
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {versions.length > 0 && (
+                  !showDeleteAllVersionsConfirm ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowDeleteAllVersionsConfirm(true)}
+                      className="gap-2 text-destructive border-destructive/30 hover:bg-destructive/10"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Delete All
+                    </Button>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowDeleteAllVersionsConfirm(false)}
+                        disabled={isDeletingAllVersions}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={isDeletingAllVersions}
+                        onClick={handleDeleteAllVersions}
+                      >
+                        {isDeletingAllVersions ? "Deleting..." : "Confirm"}
+                      </Button>
+                    </div>
+                  )
+                )}
+                <Button onClick={handleAddVersion} size="sm" className="gap-2">
+                  <Plus className="w-4 h-4" />
+                  Add Version
+                </Button>
+              </div>
             </div>
 
             {/* Versions List */}
@@ -1159,8 +1427,13 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
                     name: "Main Preview",
                     filePath: project.audioPreviewPath,
                     notes: null,
+                    source: "manual" as const,
                     versionNumber: 0,
                     createdAt: project.createdAt,
+                    peakDb: null,
+                    rmsDb: null,
+                    lufsIntegrated: null,
+                    analysisPath: null,
                   }}
                   isSelected={selectedVersion?.id === "main"}
                   isExpanded={expandedVersions.has("main")}
@@ -1175,13 +1448,20 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
                     name: "Main Preview",
                     filePath: project.audioPreviewPath!,
                     notes: null,
+                    source: "manual" as const,
                     versionNumber: 0,
                     createdAt: project.createdAt,
+                    peakDb: null,
+                    rmsDb: null,
+                    lufsIntegrated: null,
+                    analysisPath: null,
                   })}
                   onToggleExpand={() => toggleVersionExpanded("main")}
                   onDelete={() => {}}
                   onUpdateName={() => {}}
                   onSetFavorite={() => handleSetFavorite("main")}
+                  onAnalyze={() => {}}
+                  isAnalyzing={false}
                   isFavorite={effectiveFavoriteId === "main"}
                   formatTime={formatTime}
                   isMain
@@ -1189,7 +1469,7 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
               )}
 
               {/* Other Versions */}
-              {versions.map((version) => (
+              {versions.filter(v => versionSourceFilter === "all" || v.source === versionSourceFilter).map((version) => (
                 <VersionCard
                   key={version.id}
                   version={version}
@@ -1205,6 +1485,8 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
                   onDelete={() => handleDeleteVersion(version.id)}
                   onUpdateName={(name) => handleUpdateVersionName(version.id, name)}
                   onSetFavorite={() => handleSetFavorite(version.id)}
+                  onAnalyze={() => handleAnalyzeVersion(version.id)}
+                  isAnalyzing={analyzingVersionId === version.id}
                   isFavorite={effectiveFavoriteId === version.id}
                   formatTime={formatTime}
                 />
@@ -1215,6 +1497,11 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
                   <FileAudio className="w-12 h-12 mx-auto mb-4 opacity-50" />
                   <p>No audio versions yet</p>
                   <p className="text-sm">Add your first version to start tracking changes</p>
+                </div>
+              )}
+              {versions.length > 0 && versionSourceFilter !== "all" && versions.filter(v => v.source === versionSourceFilter).length === 0 && (
+                <div className="text-center py-8 text-muted-foreground">
+                  <p className="text-sm">No {versionSourceFilter === "auto" ? "recordings" : versionSourceFilter === "offline" ? "offline renders" : "manual versions"} found</p>
                 </div>
               )}
             </div>
@@ -1384,72 +1671,230 @@ export const ProjectDetail: React.FC<ProjectDetailProps> = ({
                 </h3>
                 <div className="space-y-2">
                   {annotations.map((annotation) => (
-                    <motion.div
-                      key={annotation.id}
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      className={cn(
-                        "p-4 rounded-lg bg-card/50 border border-border/30",
-                        "hover:bg-card/80 transition-colors group"
-                      )}
-                    >
-                      {editingAnnotation === annotation.id ? (
-                        <div className="flex items-start gap-3">
-                          <Textarea
-                            value={editText}
-                            onChange={(e) => setEditText(e.target.value)}
-                            className="flex-1 min-h-[60px]"
-                            autoFocus
-                          />
-                          <div className="flex flex-col gap-2">
-                            <Button size="sm" onClick={() => handleUpdateAnnotation(annotation.id)}>
-                              <Save className="w-4 h-4" />
-                            </Button>
-                            <Button size="sm" variant="ghost" onClick={() => setEditingAnnotation(null)}>
-                              <X className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="flex items-start gap-3">
-                          <button
-                            onClick={() => handleSeekTo(annotation.timestamp)}
-                            className="flex-shrink-0 px-3 py-1.5 rounded-lg bg-muted hover:bg-muted/80 transition-colors font-mono text-sm"
-                            style={{ borderLeft: `3px solid ${annotation.color}` }}
-                          >
-                            {formatTime(annotation.timestamp)}
-                          </button>
-                          <p className="flex-1 text-sm leading-relaxed">{annotation.text}</p>
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-8 w-8"
-                              onClick={() => {
-                                setEditingAnnotation(annotation.id)
-                                setEditText(annotation.text)
-                              }}
-                            >
-                              <Edit2 className="w-3.5 h-3.5" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-8 w-8 text-destructive"
-                              onClick={() => handleDeleteAnnotation(annotation.id)}
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-                    </motion.div>
+                    <ContextMenu key={annotation.id}>
+                      <ContextMenuTrigger>
+                        <motion.div
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          className={cn(
+                            "p-4 rounded-lg bg-card/50 border border-border/30",
+                            "hover:bg-card/80 transition-colors group",
+                            annotation.isTask && "border-primary/30 bg-primary/5"
+                          )}
+                        >
+                          {editingAnnotation === annotation.id ? (
+                            <div className="flex items-start gap-3">
+                              <Textarea
+                                value={editText}
+                                onChange={(e) => setEditText(e.target.value)}
+                                className="flex-1 min-h-[60px]"
+                                autoFocus
+                              />
+                              <div className="flex flex-col gap-2">
+                                <Button size="sm" onClick={() => handleUpdateAnnotation(annotation.id)}>
+                                  <Save className="w-4 h-4" />
+                                </Button>
+                                <Button size="sm" variant="ghost" onClick={() => setEditingAnnotation(null)}>
+                                  <X className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-start gap-3">
+                              <button
+                                onClick={() => handleSeekTo(annotation.timestamp)}
+                                className="flex-shrink-0 px-3 py-1.5 rounded-lg bg-muted hover:bg-muted/80 transition-colors font-mono text-sm"
+                                style={{ borderLeft: `3px solid ${annotation.color}` }}
+                              >
+                                {formatTime(annotation.timestamp)}
+                              </button>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm leading-relaxed">{annotation.text}</p>
+                                {annotation.isTask && (
+                                  <Badge variant="outline" className="text-[10px] mt-1 border-primary/30 text-primary">
+                                    Task: {annotation.taskStatus || "todo"}
+                                  </Badge>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-8 w-8"
+                                  onClick={() => {
+                                    setEditingAnnotation(annotation.id)
+                                    setEditText(annotation.text)
+                                  }}
+                                >
+                                  <Edit2 className="w-3.5 h-3.5" />
+                                </Button>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-8 w-8 text-destructive"
+                                  onClick={() => handleDeleteAnnotation(annotation.id)}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </motion.div>
+                      </ContextMenuTrigger>
+                      <ContextMenuContent>
+                        <ContextMenuItem onClick={() => handleSeekTo(annotation.timestamp)}>
+                          Jump to {formatTime(annotation.timestamp)}
+                        </ContextMenuItem>
+                        <ContextMenuItem onClick={() => navigator.clipboard.writeText(annotation.text)}>
+                          Copy text
+                        </ContextMenuItem>
+                        <ContextMenuSeparator />
+                        {annotation.isTask ? (
+                          <ContextMenuItem onClick={async () => {
+                            if (isElectron()) {
+                              await window.electron?.unconvertAnnotationFromTask(annotation.id)
+                              await loadProjectTasks()
+                              await loadVersions()
+                            }
+                          }}>
+                            Remove from tasks
+                          </ContextMenuItem>
+                        ) : (
+                          <ContextMenuItem onClick={async () => {
+                            if (isElectron()) {
+                              await window.electron?.convertAnnotationToTask(annotation.id)
+                              await loadProjectTasks()
+                              await loadVersions()
+                            }
+                          }}>
+                            Convert to task
+                          </ContextMenuItem>
+                        )}
+                        <ContextMenuSeparator />
+                        <ContextMenuItem onClick={() => {
+                          setEditingAnnotation(annotation.id)
+                          setEditText(annotation.text)
+                        }}>
+                          Edit annotation
+                        </ContextMenuItem>
+                        <ContextMenuItem className="text-destructive" onClick={() => handleDeleteAnnotation(annotation.id)}>
+                          Delete annotation
+                        </ContextMenuItem>
+                      </ContextMenuContent>
+                    </ContextMenu>
                   ))}
                 </div>
               </div>
             )}
-          </div>
-        </ScrollArea>
+
+              </div>
+            </ScrollArea>
+          </TabsContent>
+
+          {/* Analysis Tab */}
+          {project.dawType?.toLowerCase().includes("fl studio") && project.dawProjectPath && (
+            <TabsContent value="analysis" className="flex-1 overflow-hidden mt-0">
+              <ScrollArea className="h-full">
+                <div className="p-6">
+                  <ProjectAnalysis project={project} />
+                </div>
+              </ScrollArea>
+            </TabsContent>
+          )}
+
+          {/* Tasks Tab */}
+          <TabsContent value="tasks" className="flex-1 overflow-hidden mt-0">
+            <ScrollArea className="h-full">
+              <div className="p-6">
+                <ProjectKanban
+                  project={project}
+                  tasks={projectTasks}
+                  taskAnnotations={taskAnnotations}
+                  onCreateTask={async (task) => {
+                    if (!isElectron()) return
+                    await window.electron?.createTask({
+                      title: task.title || "Untitled Task",
+                      status: task.status || "todo",
+                      projectId: project.id,
+                      priority: task.priority || "medium",
+                      description: task.description || null,
+                      dueDate: task.dueDate || null,
+                      order: 0,
+                      tags: [],
+                      comments: [],
+                      assignedTo: null,
+                      completedAt: null,
+                      column: null,
+                      groupBy: null,
+                    } as Omit<Task, 'id' | 'createdAt' | 'updatedAt'>)
+                    await loadProjectTasks()
+                    onRefresh()
+                  }}
+                  onUpdateTask={async (id, updates) => {
+                    if (!isElectron()) return
+                    await window.electron?.updateTask(id, updates)
+                    await loadProjectTasks()
+                    onRefresh()
+                  }}
+                  onDeleteTask={async (id) => {
+                    if (!isElectron()) return
+                    await window.electron?.deleteTask(id)
+                    await loadProjectTasks()
+                    onRefresh()
+                  }}
+                  onReorderTasks={async (items) => {
+                    if (!isElectron()) return
+                    await window.electron?.reorderTasks(items as { id: string; order: number; status: Task['status'] }[])
+                    await loadProjectTasks()
+                  }}
+                  onConvertAnnotation={async (annotationId) => {
+                    if (!isElectron()) return
+                    await window.electron?.convertAnnotationToTask(annotationId)
+                    await loadProjectTasks()
+                  }}
+                  onUnconvertAnnotation={async (annotationId) => {
+                    if (!isElectron()) return
+                    await window.electron?.unconvertAnnotationFromTask(annotationId)
+                    await loadProjectTasks()
+                  }}
+                  onUpdateAnnotationTask={async (annotationId, data) => {
+                    if (!isElectron()) return
+                    await window.electron?.updateAnnotationTask(annotationId, data)
+                    await loadProjectTasks()
+                  }}
+                  onRefresh={loadProjectTasks}
+                />
+              </div>
+            </ScrollArea>
+          </TabsContent>
+
+          {/* Collaboration Tab */}
+          <TabsContent value="collaboration" className="flex-1 overflow-hidden mt-0">
+            <ScrollArea className="h-full">
+              <div className="p-6">
+                <CollaborationPanel project={project} onRefresh={onRefresh} />
+              </div>
+            </ScrollArea>
+          </TabsContent>
+
+          {/* VST Plugin Tab */}
+          <TabsContent value="plugin" className="flex-1 overflow-hidden mt-0">
+            <ScrollArea className="h-full">
+              <div className="p-6">
+                <PluginStatus
+                  sessions={pluginSessions}
+                  projects={projects || []}
+                  currentProjectId={project.id}
+                  onLinkPlugin={onLinkPlugin || (async () => {})}
+                  onUnlinkPlugin={onUnlinkPlugin || (async () => {})}
+                  onStartRecording={onStartPluginRecording || (async () => {})}
+                  onStopRecording={onStopPluginRecording || (async () => {})}
+                  onToggleOfflineCapture={onToggleOfflineCapture}
+                />
+              </div>
+            </ScrollArea>
+          </TabsContent>
+        </Tabs>
       </div>
     </TooltipProvider>
   )
@@ -1470,6 +1915,8 @@ interface VersionCardProps {
   onDelete: () => void
   onUpdateName: (name: string) => void
   onSetFavorite: () => void
+  onAnalyze: () => void
+  isAnalyzing: boolean
   isFavorite: boolean
   formatTime: (seconds: number) => string
   isMain?: boolean
@@ -1489,6 +1936,8 @@ const VersionCard: React.FC<VersionCardProps> = ({
   onDelete,
   onUpdateName,
   onSetFavorite,
+  onAnalyze,
+  isAnalyzing,
   isFavorite,
   formatTime,
   isMain,
@@ -1560,14 +2009,48 @@ const VersionCard: React.FC<VersionCardProps> = ({
             </div>
           ) : (
             <>
-              <h4 className="font-medium truncate">
-                {version.filePath ? version.filePath.split(/[\\/]/).pop()?.replace(/\.[^/.]+$/, '') || version.name : version.name}
-              </h4>
+              <div className="flex items-center gap-1.5">
+                <h4 className="font-medium truncate">
+                  {version.name}
+                </h4>
+                {!isMain && version.source && version.source !== "manual" && (
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-[9px] px-1 py-0 flex-shrink-0",
+                      version.source === "offline"
+                        ? "border-cyan-500/30 text-cyan-400 bg-cyan-500/10"
+                        : "border-yellow-500/30 text-yellow-400 bg-yellow-500/10"
+                    )}
+                  >
+                    {version.source === "offline" ? "RENDER" : "REC"}
+                  </Badge>
+                )}
+              </div>
               <p className="text-xs text-muted-foreground truncate">
                 {isMain ? "Original preview" : `v${version.versionNumber}`}
-                {version.name && version.name !== version.filePath?.split(/[\\/]/).pop()?.replace(/\.[^/.]+$/, '') && ` • ${version.name}`}
                 {version.notes && ` • ${version.notes}`}
               </p>
+              {/* Audio analysis info */}
+              {(version.peakDb != null || version.lufsIntegrated != null) && (
+                <div className="flex items-center gap-2 mt-0.5">
+                  {version.peakDb != null && (
+                    <span className="text-[10px] font-mono text-muted-foreground/70">
+                      Peak: {version.peakDb.toFixed(1)} dB
+                    </span>
+                  )}
+                  {version.rmsDb != null && (
+                    <span className="text-[10px] font-mono text-muted-foreground/70">
+                      RMS: {version.rmsDb.toFixed(1)} dB
+                    </span>
+                  )}
+                  {version.lufsIntegrated != null && (
+                    <span className="text-[10px] font-mono text-primary/70">
+                      {version.lufsIntegrated.toFixed(1)} LUFS
+                    </span>
+                  )}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -1596,6 +2079,29 @@ const VersionCard: React.FC<VersionCardProps> = ({
           
           {!isMain && !isEditing && (
             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
+              {version.lufsIntegrated == null && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8"
+                      disabled={isAnalyzing}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onAnalyze()
+                      }}
+                    >
+                      {isAnalyzing ? (
+                        <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <BarChart3 className="w-4 h-4" />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Analyze audio (dB/LUFS)</TooltipContent>
+                </Tooltip>
+              )}
               <Button
                 size="icon"
                 variant="ghost"

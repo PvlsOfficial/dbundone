@@ -12,6 +12,12 @@ import type {
   AudioVersion,
   Annotation,
   ArtworkHistoryEntry,
+  PluginSession,
+  PluginEvent,
+  FlpAnalysis,
+  UserProfile,
+  ProjectShare,
+  OnboardingState,
 } from "@shared/types";
 
 // ============ Projects ============
@@ -74,6 +80,10 @@ export const reorderTasks = (
   tasks: { id: string; order: number; status: Task["status"] }[]
 ): Promise<boolean> => invoke("reorder_tasks", { tasks });
 
+export const reorderProjects = (
+  projects: { id: string; sortOrder: number }[]
+): Promise<boolean> => invoke("reorder_projects", { projects });
+
 // ============ Tags ============
 export const getTags = (): Promise<Tag[]> => invoke("get_tags");
 
@@ -104,6 +114,9 @@ export const updateVersion = (
 
 export const deleteVersion = (id: string): Promise<boolean> =>
   invoke("delete_version", { id });
+
+export const getProjectVersionSources = (): Promise<Record<string, string[]>> =>
+  invoke("get_project_version_sources");
 
 // ============ Annotations ============
 export const getAnnotationsByVersion = (
@@ -158,7 +171,7 @@ export const selectProject = async (): Promise<string | null> => {
     filters: [
       {
         name: "DAW Projects",
-        extensions: ["als", "flp", "logic", "ptx", "cpr", "rpp", "aup"],
+        extensions: ["als", "flp", "logic", "ptx", "cpr", "rpp", "aup", "zip"],
       },
       { name: "All Files", extensions: ["*"] },
     ],
@@ -177,9 +190,13 @@ export const selectFolder = async (): Promise<string | null> => {
 export const readDir = (folderPath: string): Promise<string[]> =>
   invoke("read_dir_contents", { folderPath });
 
+/** Scan sample root folders and return folder→children map (3 levels deep) */
+export const scanSampleTree = (roots: string[]): Promise<Record<string, string[]>> =>
+  invoke("scan_sample_tree", { roots });
+
 export const detectProjects = (
   folderPath: string
-): Promise<{ hasFLP: boolean; hasALS: boolean }> =>
+): Promise<{ hasFLP: boolean; hasALS: boolean; detectedDAWs: string[] }> =>
   invoke("detect_projects", { folderPath });
 
 export const openInDaw = (
@@ -221,6 +238,13 @@ export const scanAbletonFolder = (
   folderPath: string
 ): Promise<{ count: number }> =>
   invoke("scan_ableton_folder", { folderPath });
+
+/** Generic scan for any DAW (Logic Pro, Pro Tools, Cubase, Studio One, etc.) */
+export const scanDAWFolder = (
+  folderPath: string,
+  dawName: string
+): Promise<{ count: number }> =>
+  invoke("scan_daw_folder", { folderPath, dawName });
 
 export const updateFileModDates = (): Promise<{ count: number }> =>
   invoke("update_file_mod_dates");
@@ -301,6 +325,182 @@ export const setArtworkFromHistory = (
 ): Promise<Project> =>
   invoke("set_artwork_from_history", { projectId, filePath });
 
+// ============ Plugin Sessions ============
+export const getPluginSessions = (): Promise<PluginSession[]> =>
+  invoke("get_plugin_sessions");
+
+export const getPluginSessionsForProject = (
+  projectId: string
+): Promise<PluginSession[]> =>
+  invoke("get_plugin_sessions_for_project", { projectId });
+
+export const linkPluginToProject = (
+  sessionId: string,
+  projectId: string
+): Promise<boolean> =>
+  invoke("link_plugin_to_project", { sessionId, projectId });
+
+export const unlinkPluginFromProject = (
+  sessionId: string
+): Promise<boolean> =>
+  invoke("unlink_plugin_from_project", { sessionId });
+
+export const requestPluginStartRecording = (
+  sessionId: string
+): Promise<boolean> =>
+  invoke("request_plugin_start_recording", { sessionId });
+
+export const requestPluginStopRecording = (
+  sessionId: string
+): Promise<boolean> =>
+  invoke("request_plugin_stop_recording", { sessionId });
+
+export const getPluginServerPort = (): Promise<number> =>
+  invoke("get_plugin_server_port");
+
+export const sendProjectListToPlugin = (
+  sessionId: string
+): Promise<boolean> =>
+  invoke("send_project_list_to_plugin", { sessionId });
+
+export const importPluginRecording = (
+  sessionId: string,
+  projectId: string,
+  sourceFilePath: string,
+  name: string,
+  source?: string,
+  peakDb?: number | null,
+  rmsDb?: number | null
+): Promise<AudioVersion> =>
+  invoke("import_plugin_recording", {
+    sessionId,
+    projectId,
+    sourceFilePath,
+    name,
+    source: source || "auto",
+    peakDb: peakDb ?? null,
+    rmsDb: rmsDb ?? null,
+  });
+
+export const onPluginEvent = (
+  callback: (payload: PluginEvent) => void
+): Promise<UnlistenFn> => {
+  return listen("plugin-event", (event) => {
+    callback(event.payload as PluginEvent);
+  });
+};
+
+// ============ Recordings Management ============
+export const deleteProjectRecordings = (
+  projectId: string
+): Promise<{ success: boolean; versionsDeleted: number; filesDeleted: number }> =>
+  invoke("delete_project_recordings", { projectId });
+
+export const deleteAllRecordings = (): Promise<{
+  success: boolean;
+  versionsDeleted: number;
+  filesDeleted: number;
+}> => invoke("delete_all_recordings");
+
+// ============ Audio Analysis ============
+export interface AudioAnalysis {
+  sampleRate: number
+  channels: number
+  durationSecs: number
+  windowSizeMs: number
+  hopSizeMs: number
+  frames: Array<{ time: number; rmsDb: number; peakDb: number }>
+  peakDb: number
+  rmsDb: number
+  lufsIntegrated: number
+}
+
+export const analyzeAudioVersion = (
+  versionId: string
+): Promise<AudioAnalysis> =>
+  invoke("analyze_audio_version", { versionId });
+
+export const getAudioAnalysis = (
+  versionId: string
+): Promise<AudioAnalysis | null> =>
+  invoke("get_audio_analysis", { versionId });
+
+// ============ FLP Analysis (Extended) ============
+export const analyzeFlpProject = (
+  projectId: string,
+  filePath: string
+): Promise<FlpAnalysis> =>
+  invoke("analyze_flp_project", { projectId, filePath });
+
+export const clearFlpAnalysisCache = (
+  projectId: string
+): Promise<boolean> =>
+  invoke("clear_flp_analysis_cache", { projectId });
+
+// ============ User Profile ============
+export const getUserProfile = (): Promise<UserProfile> =>
+  invoke("get_user_profile");
+
+export const updateUserProfile = (
+  profile: Partial<UserProfile>
+): Promise<UserProfile> =>
+  invoke("update_user_profile", { profile });
+
+// ============ Collaboration / Shares ============
+export const createProjectShare = (
+  projectId: string,
+  permissions?: string,
+  message?: string
+): Promise<ProjectShare> =>
+  invoke("create_project_share", { projectId, permissions, message });
+
+export const getProjectShares = (
+  projectId: string
+): Promise<ProjectShare[]> =>
+  invoke("get_project_shares", { projectId });
+
+export const deleteProjectShare = (
+  id: string
+): Promise<boolean> =>
+  invoke("delete_project_share", { id });
+
+// ============ Onboarding ============
+export const getOnboardingState = (): Promise<OnboardingState> =>
+  invoke("get_onboarding_state");
+
+export const updateOnboardingState = (
+  state: Partial<OnboardingState>
+): Promise<boolean> =>
+  invoke("update_onboarding_state", { state });
+
+// ============ Annotation-Task Conversion ============
+export const convertAnnotationToTask = (
+  annotationId: string
+): Promise<Annotation> =>
+  invoke("convert_annotation_to_task", { annotationId });
+
+export const unconvertAnnotationFromTask = (
+  annotationId: string
+): Promise<Annotation> =>
+  invoke("unconvert_annotation_from_task", { annotationId });
+
+export const updateAnnotationTask = (
+  annotationId: string,
+  data: { taskStatus?: string; taskPriority?: string; taskDueDate?: string | null }
+): Promise<Annotation> =>
+  invoke("update_annotation_task", { annotationId, data });
+
+export const getTaskAnnotationsByProject = (
+  projectId: string
+): Promise<Annotation[]> =>
+  invoke("get_task_annotations_by_project", { projectId });
+
+// ============ Screenshot ============
+export const captureWindowScreenshot = (
+  windowTitle: string
+): Promise<string> =>
+  invoke("capture_window_screenshot", { windowTitle });
+
 // ============ Settings ============
 export const getSettings = (): Promise<AppSettings> =>
   invoke("get_settings");
@@ -371,6 +571,7 @@ export const electronCompat = {
   updateTask,
   deleteTask,
   reorderTasks,
+  reorderProjects,
 
   // Tags
   getTags,
@@ -383,6 +584,7 @@ export const electronCompat = {
   createVersion,
   updateVersion,
   deleteVersion,
+  getProjectVersionSources,
 
   // Annotations
   getAnnotationsByVersion,
@@ -396,6 +598,7 @@ export const electronCompat = {
   selectProject,
   selectFolder,
   readDir,
+  scanSampleTree,
   detectProjects,
   openInDaw,
   openFolder,
@@ -406,6 +609,7 @@ export const electronCompat = {
   // Scanning
   scanFLStudioFolder,
   scanAbletonFolder,
+  scanDAWFolder,
   updateFileModDates,
   updateDawTypes,
 
@@ -428,6 +632,52 @@ export const electronCompat = {
   addArtworkHistoryEntry,
   deleteArtworkHistoryEntry,
   setArtworkFromHistory,
+
+  // Plugin sessions
+  getPluginSessions,
+  getPluginSessionsForProject,
+  linkPluginToProject,
+  unlinkPluginFromProject,
+  requestPluginStartRecording,
+  requestPluginStopRecording,
+  getPluginServerPort,
+  sendProjectListToPlugin,
+  importPluginRecording,
+  onPluginEvent,
+
+  // Recordings management
+  deleteProjectRecordings,
+  deleteAllRecordings,
+
+  // Audio Analysis
+  analyzeAudioVersion,
+  getAudioAnalysis,
+
+  // FLP Analysis
+  analyzeFlpProject,
+  clearFlpAnalysisCache,
+
+  // User Profile
+  getUserProfile,
+  updateUserProfile,
+
+  // Collaboration
+  createProjectShare,
+  getProjectShares,
+  deleteProjectShare,
+
+  // Onboarding
+  getOnboardingState,
+  updateOnboardingState,
+
+  // Annotation-Task
+  convertAnnotationToTask,
+  unconvertAnnotationFromTask,
+  updateAnnotationTask,
+  getTaskAnnotationsByProject,
+
+  // Screenshot
+  captureWindowScreenshot,
 
   // Settings
   getSettings,

@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react'
+import { useI18n } from '@/i18n'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   ArrowLeft,
@@ -10,6 +11,7 @@ import {
   Search,
   Grid3X3,
   List,
+  GalleryHorizontalEnd,
   MoreHorizontal,
   Edit3,
   Trash2,
@@ -68,7 +70,7 @@ import {
 import { cn } from '@/lib/utils'
 import { useImageUrl } from '@/hooks/useImageUrl'
 import { ProjectCard } from '@/components/ProjectCard'
-import { Project, ProjectGroup, AudioPlayerState, AppSettings, ProjectStatus, Tag } from '@shared/types'
+import { Project, ProjectGroup, AudioPlayerState, AppSettings, ProjectStatus, Tag, PluginSession } from '@shared/types'
 
 interface GroupDetailProps {
   group: ProjectGroup
@@ -92,6 +94,7 @@ interface GroupDetailProps {
   onDeleteProject: (project: Project) => Promise<void>
   onSettingsChange: (settings: Partial<AppSettings>) => void
   onOpenArtworkManager?: (project: Project) => void
+  pluginSessions?: PluginSession[]
 }
 
 function ArtworkImage({ filePath, alt, className }: { filePath: string | null | undefined, alt: string, className?: string }) {
@@ -124,8 +127,10 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
   onDeleteProject,
   onSettingsChange,
   onOpenArtworkManager,
+  pluginSessions,
 }) => {
-  const [viewMode, setViewModeState] = useState<'grid' | 'list'>(settings.viewMode || 'grid')
+  const { t } = useI18n()
+  const [viewMode, setViewModeState] = useState<'grid' | 'list' | 'gallery'>(settings.viewMode || 'grid')
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState<SortOption>('date-newest')
   const [selectedTags, setSelectedTags] = useState<string[]>([])
@@ -146,7 +151,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
   const [showFilters, setShowFilters] = useState(false)
 
   // Update viewMode and persist to settings
-  const setViewMode = (mode: 'grid' | 'list') => {
+  const setViewMode = (mode: 'grid' | 'list' | 'gallery') => {
     setViewModeState(mode)
     onSettingsChange({ viewMode: mode })
   }
@@ -485,7 +490,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
               className="gap-2 -ml-2"
             >
               <ArrowLeft className="w-4 h-4" />
-              Back to Groups
+              {t('groupDetail.backToGroups')}
             </Button>
 
             <div className="flex items-center gap-2">
@@ -503,7 +508,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                       <SkipBack className="w-4 h-4" />
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent>Previous Track</TooltipContent>
+                  <TooltipContent>{t('groupDetail.previousTrack')}</TooltipContent>
                 </Tooltip>
                 
                 <Tooltip>
@@ -518,7 +523,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                       {isPlayingGroup ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent>{isPlayingGroup ? 'Pause' : 'Play Group'}</TooltipContent>
+                  <TooltipContent>{isPlayingGroup ? t('groupDetail.pause') : t('groupDetail.playGroup')}</TooltipContent>
                 </Tooltip>
 
                 <Tooltip>
@@ -533,7 +538,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                       <SkipForward className="w-4 h-4" />
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent>Next Track</TooltipContent>
+                  <TooltipContent>{t('groupDetail.nextTrack')}</TooltipContent>
                 </Tooltip>
               </div>
 
@@ -546,25 +551,25 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                 <DropdownMenuContent align="end" className="w-48">
                   <DropdownMenuItem onClick={() => setIsEditing(true)}>
                     <Edit3 className="w-4 h-4 mr-2" />
-                    Edit Details
+                    {t('groupDetail.editDetails')}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleChangeGroupArtwork}>
                     <ImageIcon className="w-4 h-4 mr-2" />
-                    Change Artwork
+                    {t('groups.changeArtwork')}
                   </DropdownMenuItem>
                   {group.artworkPath && (
                     <DropdownMenuItem onClick={handleRemoveGroupArtwork} className="text-destructive focus:text-destructive">
                       <X className="w-4 h-4 mr-2" />
-                      Remove Artwork
+                      {t('groups.removeArtwork')}
                     </DropdownMenuItem>
                   )}
                   <DropdownMenuItem onClick={() => navigator.clipboard.writeText(group.name)}>
                     <Copy className="w-4 h-4 mr-2" />
-                    Copy Name
+                    {t('groups.copyName')}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={exportGroup}>
                     <Download className="w-4 h-4 mr-2" />
-                    Export Group
+                    {t('groupDetail.exportGroup')}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
@@ -572,7 +577,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                     className="text-destructive focus:text-destructive"
                   >
                     <Trash2 className="w-4 h-4 mr-2" />
-                    Delete Group
+                    {t('groups.deleteGroup')}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -605,7 +610,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                       handleRemoveGroupArtwork()
                     }}
                     className="p-1.5 bg-destructive/80 hover:bg-destructive rounded-full text-white transition-colors"
-                    title="Remove artwork"
+                  title={t('groups.removeArtwork')}
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -616,7 +621,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                     handleChangeGroupArtwork()
                   }}
                   className="p-1.5 bg-primary/80 hover:bg-primary rounded-full text-white transition-colors"
-                  title="Change artwork"
+                  title={t('groups.changeArtwork')}
                 >
                   <ImageIcon className="w-4 h-4" />
                 </button>
@@ -632,18 +637,18 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
               <div className="flex items-center gap-3 mt-2">
                 <Badge variant="secondary" className="gap-1.5">
                   <Disc className="w-3 h-3" />
-                  {stats.totalProjects} project{stats.totalProjects !== 1 ? 's' : ''}
+                  {t('groupDetail.projectCount', { count: String(stats.totalProjects) })}
                 </Badge>
                 {stats.avgBPM > 0 && (
                   <Badge variant="outline" className="gap-1.5">
                     <Clock className="w-3 h-3" />
-                    {stats.avgBPM} BPM avg
+                    {t('groupDetail.bpmAvg', { bpm: String(stats.avgBPM) })}
                   </Badge>
                 )}
                 {stats.uniqueKeys > 0 && (
                   <Badge variant="outline" className="gap-1.5">
                     <Key className="w-3 h-3" />
-                    {stats.uniqueKeys} key{stats.uniqueKeys !== 1 ? 's' : ''}
+                    {t('groupDetail.keyCount', { count: String(stats.uniqueKeys) })}
                   </Badge>
                 )}
               </div>
@@ -659,7 +664,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
             <div className="relative flex-1 max-w-md">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
-                placeholder="Search projects..."
+                placeholder={t('dashboard.search')}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-9 bg-muted/30"
@@ -677,20 +682,20 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
             {/* Sort */}
             <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortOption)}>
               <SelectTrigger className="w-44 bg-muted/30">
-                <SelectValue placeholder="Sort by" />
+                <SelectValue placeholder={t('filter.sortBy')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="date-newest">Newest First</SelectItem>
-                <SelectItem value="date-oldest">Oldest First</SelectItem>
-                <SelectItem value="name-asc">Name A-Z</SelectItem>
-                <SelectItem value="name-desc">Name Z-A</SelectItem>
-                <SelectItem value="bpm-asc">BPM Low-High</SelectItem>
-                <SelectItem value="bpm-desc">BPM High-Low</SelectItem>
-                <SelectItem value="time-spent-asc">Time Spent Low-High</SelectItem>
-                <SelectItem value="time-spent-desc">Time Spent High-Low</SelectItem>
-                <SelectItem value="key">Musical Key</SelectItem>
-                <SelectItem value="tags-asc">Tags A-Z</SelectItem>
-                <SelectItem value="tags-desc">Tags Z-A</SelectItem>
+                <SelectItem value="date-newest">{t('sort.newest')}</SelectItem>
+                <SelectItem value="date-oldest">{t('sort.oldest')}</SelectItem>
+                <SelectItem value="name-asc">{t('sort.nameAsc')}</SelectItem>
+                <SelectItem value="name-desc">{t('sort.nameDesc')}</SelectItem>
+                <SelectItem value="bpm-asc">{t('sort.bpmAsc')}</SelectItem>
+                <SelectItem value="bpm-desc">{t('sort.bpmDesc')}</SelectItem>
+                <SelectItem value="time-spent-asc">{t('sort.timeAsc')}</SelectItem>
+                <SelectItem value="time-spent-desc">{t('sort.timeDesc')}</SelectItem>
+                <SelectItem value="key">{t('sort.key')}</SelectItem>
+                <SelectItem value="tags-asc">{t('sort.tagsAsc')}</SelectItem>
+                <SelectItem value="tags-desc">{t('sort.tagsDesc')}</SelectItem>
               </SelectContent>
             </Select>
 
@@ -721,7 +726,23 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                     <Grid3X3 className="w-4 h-4" />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent>Grid View</TooltipContent>
+                <TooltipContent>{t('groupDetail.gridView')}</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => setViewMode('gallery')}
+                    className={cn(
+                      "p-1.5 rounded-md transition-colors",
+                      viewMode === 'gallery'
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <GalleryHorizontalEnd className="w-4 h-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{t('dashboard.galleryView')}</TooltipContent>
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -737,7 +758,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                     <List className="w-4 h-4" />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent>List View</TooltipContent>
+                <TooltipContent>{t('groupDetail.listView')}</TooltipContent>
               </Tooltip>
             </div>
 
@@ -752,10 +773,10 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                 className="flex items-center gap-2"
               >
                 <Button variant="ghost" size="sm" onClick={handleSelectAll}>
-                  {selectedProjects.size === filteredProjects.length ? 'Deselect All' : 'Select All'}
+                  {selectedProjects.size === filteredProjects.length ? t('common.deselectAll') : t('common.selectAll')}
                 </Button>
                 <span className="text-sm text-muted-foreground">
-                  {selectedProjects.size} selected
+                  {t('common.selected', { count: String(selectedProjects.size) })}
                 </span>
                 {selectedProjects.size > 0 && (
                   <Button
@@ -765,7 +786,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                     className="gap-1.5"
                   >
                     <Trash2 className="w-4 h-4" />
-                    Remove
+                    {t('common.remove')}
                   </Button>
                 )}
               </motion.div>
@@ -780,7 +801,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
               }}
             >
               <CheckSquare className="w-4 h-4 mr-2" />
-              {selectionMode ? "Done" : "Select"}
+              {selectionMode ? t('common.done') : t('common.select')}
             </Button>
 
             <Button
@@ -790,7 +811,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
               className="gap-1.5"
             >
               <Plus className="w-4 h-4" />
-              Add Projects
+              {t('groupDetail.addProjects')}
             </Button>
           </div>
 
@@ -806,15 +827,15 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                 <div className="mt-4 pt-4 border-t border-border/30 space-y-4">
                   {/* Status Filter */}
                   <div className="space-y-2">
-                    <label className="text-sm font-medium text-foreground">Status</label>
+                    <label className="text-sm font-medium text-foreground">{t('filter.status')}</label>
                     <div className="flex flex-wrap gap-2">
                       {[
-                        { id: "idea", title: "Idea", icon: <Lightbulb className="w-3.5 h-3.5" />, color: "text-purple-600 dark:text-purple-400", bgColor: "bg-purple-500/15 dark:bg-purple-500/10" },
-                        { id: "in-progress", title: "In Progress", icon: <Music className="w-3.5 h-3.5" />, color: "text-blue-600 dark:text-blue-400", bgColor: "bg-blue-500/15 dark:bg-blue-500/10" },
-                        { id: "mixing", title: "Mixing", icon: <Headphones className="w-3.5 h-3.5" />, color: "text-orange-600 dark:text-orange-400", bgColor: "bg-orange-500/15 dark:bg-orange-500/10" },
-                        { id: "mastering", title: "Mastering", icon: <Disc3 className="w-3.5 h-3.5" />, color: "text-cyan-600 dark:text-cyan-400", bgColor: "bg-cyan-500/15 dark:bg-cyan-500/10" },
-                        { id: "completed", title: "Completed", icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: "text-green-600 dark:text-green-400", bgColor: "bg-green-500/15 dark:bg-green-500/10" },
-                        { id: "released", title: "Released", icon: <PartyPopper className="w-3.5 h-3.5" />, color: "text-pink-600 dark:text-pink-400", bgColor: "bg-pink-500/15 dark:bg-pink-500/10" },
+                        { id: "idea", title: t('status.idea'), icon: <Lightbulb className="w-3.5 h-3.5" />, color: "text-purple-600 dark:text-purple-400", bgColor: "bg-purple-500/15 dark:bg-purple-500/10" },
+                        { id: "in-progress", title: t('status.inProgress'), icon: <Music className="w-3.5 h-3.5" />, color: "text-blue-600 dark:text-blue-400", bgColor: "bg-blue-500/15 dark:bg-blue-500/10" },
+                        { id: "mixing", title: t('status.mixing'), icon: <Headphones className="w-3.5 h-3.5" />, color: "text-orange-600 dark:text-orange-400", bgColor: "bg-orange-500/15 dark:bg-orange-500/10" },
+                        { id: "mastering", title: t('status.mastering'), icon: <Disc3 className="w-3.5 h-3.5" />, color: "text-cyan-600 dark:text-cyan-400", bgColor: "bg-cyan-500/15 dark:bg-cyan-500/10" },
+                        { id: "completed", title: t('status.completed'), icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: "text-green-600 dark:text-green-400", bgColor: "bg-green-500/15 dark:bg-green-500/10" },
+                        { id: "released", title: t('status.released'), icon: <PartyPopper className="w-3.5 h-3.5" />, color: "text-pink-600 dark:text-pink-400", bgColor: "bg-pink-500/15 dark:bg-pink-500/10" },
                       ].map((status) => (
                         <button
                           key={status.id}
@@ -836,7 +857,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                   {/* Tags Filter */}
                   {availableTags.length > 0 && (
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">Tags</label>
+                    <label className="text-sm font-medium text-foreground">{t('filter.tags')}</label>
                       <div className="flex flex-wrap gap-2">
                         {availableTags.map((tag) => (
                           <button
@@ -859,7 +880,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                   {/* DAW Type Filter */}
                   {availableDaws.length > 0 && (
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">DAW</label>
+                    <label className="text-sm font-medium text-foreground">{t('filter.daw')}</label>
                       <div className="flex flex-wrap gap-2">
                         {availableDaws.map((daw) => (
                           <button
@@ -882,7 +903,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                   {/* Genre Filter */}
                   {availableGenres.length > 0 && (
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">Genre</label>
+                    <label className="text-sm font-medium text-foreground">{t('filter.genre')}</label>
                       <div className="flex flex-wrap gap-2">
                         {availableGenres.map((genre) => (
                           <button
@@ -905,7 +926,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                   {/* Artist Filter */}
                   {availableArtists.length > 0 && (
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">Artist</label>
+                    <label className="text-sm font-medium text-foreground">{t('filter.artist')}</label>
                       <div className="flex flex-wrap gap-2">
                         {availableArtists.map((artist) => (
                           <button
@@ -938,7 +959,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                         }}
                         className="px-3 py-1.5 rounded-full text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors"
                       >
-                        Clear all filters
+                        {t('filter.clearAll')}
                       </button>
                     </div>
                   )}
@@ -955,9 +976,11 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
               <motion.div
                 layout
                 className={cn(
-                  viewMode === 'grid'
-                    ? "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
-                    : "space-y-3"
+                  viewMode === 'list'
+                    ? "space-y-3"
+                    : viewMode === 'gallery'
+                    ? "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-2"
+                    : "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
                 )}
               >
                 <AnimatePresence mode="popLayout">
@@ -982,6 +1005,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                       unsplashEnabled={settings.unsplashEnabled}
                       aiArtworkEnabled={settings.autoGenerateArtwork}
                       onOpenArtworkManager={onOpenArtworkManager}
+                      pluginSessions={pluginSessions}
                       onRemove={async (project) => {
                         const newProjectIds = group.projectIds.filter(id => id !== project.id)
                         await onUpdateGroup(group.id, { projectIds: newProjectIds })
@@ -1002,17 +1026,17 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                   )}
                 </div>
                 <h3 className="text-lg font-semibold mb-2">
-                  {searchQuery || selectedTags.length > 0 ? 'No projects found' : 'No projects in this group'}
+                  {searchQuery || selectedTags.length > 0 ? t('dashboard.noProjectsFound') : t('groupDetail.noProjectsInGroup')}
                 </h3>
                 <p className="text-muted-foreground mb-4">
                   {searchQuery || selectedTags.length > 0
-                    ? 'Try adjusting your search or filters'
-                    : 'Add some projects to get started'}
+                    ? t('dashboard.noProjectsSearchHint')
+                    : t('groupDetail.addSomeProjects')}
                 </p>
                 {!searchQuery && selectedTags.length === 0 && (
                   <Button onClick={() => setShowAddProjectsModal(true)} className="gap-2">
                     <Plus className="w-4 h-4" />
-                    Add Projects
+                    {t('groupDetail.addProjects')}
                   </Button>
                 )}
               </div>
@@ -1024,34 +1048,34 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
         <Dialog open={isEditing} onOpenChange={setIsEditing}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
-              <DialogTitle>Edit Group</DialogTitle>
+              <DialogTitle>{t('groups.editGroup')}</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 pt-2">
               <div className="space-y-2">
-                <Label htmlFor="group-name">Name</Label>
+                <Label htmlFor="group-name">{t('form.name')}</Label>
                 <Input
                   id="group-name"
                   value={editForm.name}
                   onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                  placeholder="Group name"
+                  placeholder={t('form.placeholder.groupName')}
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="group-description">Description</Label>
+                <Label htmlFor="group-description">{t('form.description')}</Label>
                 <Textarea
                   id="group-description"
                   value={editForm.description}
                   onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
-                  placeholder="Add a description..."
+                  placeholder={t('form.placeholder.groupDesc')}
                   rows={3}
                 />
               </div>
               <div className="flex justify-end gap-2 pt-2">
                 <Button variant="outline" onClick={() => setIsEditing(false)}>
-                  Cancel
+                  {t('common.cancel')}
                 </Button>
                 <Button onClick={handleEditGroup} disabled={!editForm.name.trim()}>
-                  Save Changes
+                  {t('common.save')}
                 </Button>
               </div>
             </div>
@@ -1063,10 +1087,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
           <DialogContent className="sm:max-w-5xl h-[85vh] flex flex-col p-0 gap-0">
             <div className="p-6 pb-0 flex-shrink-0">
               <DialogHeader className="space-y-2">
-                <DialogTitle className="text-xl">Add Projects to Group</DialogTitle>
-                <p className="text-sm text-muted-foreground">
-                  Select projects to add to "{group.name}". Projects already in this group are not shown.
-                </p>
+                <DialogTitle className="text-xl">{t('groupDetail.addProjectsTo')}</DialogTitle>
               </DialogHeader>
             </div>
             
@@ -1076,7 +1097,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                 <div className="relative flex-1">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <Input
-                    placeholder="Search by title, BPM, or key..."
+                    placeholder={t('dashboard.search')}
                     value={addProjectsSearchQuery}
                     onChange={(e) => setAddProjectsSearchQuery(e.target.value)}
                     className="pl-9 h-10"
@@ -1101,7 +1122,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                       onClick={() => setAddProjectsSelectedIds(new Set(availableProjects.map(p => p.id)))}
                       className="text-xs"
                     >
-                      Select All
+                      {t('common.selectAll')}
                     </Button>
                     <Button
                       variant="outline"
@@ -1110,7 +1131,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                       disabled={addProjectsSelectedIds.size === 0}
                       className="text-xs"
                     >
-                      Clear
+                      {t('filter.clearAll')}
                     </Button>
                   </div>
                 )}
@@ -1234,12 +1255,12 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                       <Sparkles className="w-8 h-8 text-muted-foreground" />
                     </div>
                     <h3 className="font-medium text-foreground mb-1">
-                      {addProjectsSearchQuery ? 'No results found' : 'No available projects'}
+                      {addProjectsSearchQuery ? t('groups.noResults') : t('groupDetail.noAvailable')}
                     </h3>
                     <p className="text-sm text-muted-foreground max-w-sm">
                       {addProjectsSearchQuery 
-                        ? `No projects match "${addProjectsSearchQuery}". Try a different search term.`
-                        : 'All your projects are already in this group, or you have no projects yet.'}
+                        ? t('groupDetail.noMatch', { query: addProjectsSearchQuery })
+                        : t('groupDetail.allInGroup')}
                     </p>
                     {addProjectsSearchQuery && (
                       <Button
@@ -1248,7 +1269,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                         onClick={() => setAddProjectsSearchQuery('')}
                         className="mt-4"
                       >
-                        Clear Search
+                        {t('filter.clearAll')}
                       </Button>
                     )}
                   </div>
@@ -1260,11 +1281,11 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
             <div className="flex justify-between items-center px-6 py-4 border-t bg-muted/30">
               <div className="flex items-center gap-3">
                 <span className="text-sm font-medium">
-                  {addProjectsSelectedIds.size} selected
+                  {t('common.selected', { count: String(addProjectsSelectedIds.size) })}
                 </span>
                 {availableProjects.length > 0 && (
                   <span className="text-sm text-muted-foreground">
-                    of {availableProjects.length} available
+                    {t('groupDetail.ofAvailable', { count: String(availableProjects.length) })}
                   </span>
                 )}
               </div>
@@ -1277,14 +1298,14 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                     setAddProjectsSelectedIds(new Set())
                   }}
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </Button>
                 <Button
                   onClick={handleAddProjects}
                   disabled={addProjectsSelectedIds.size === 0}
                 >
                   <Plus className="w-4 h-4 mr-2" />
-                  Add {addProjectsSelectedIds.size > 0 ? `${addProjectsSelectedIds.size} ` : ''}Project{addProjectsSelectedIds.size !== 1 ? 's' : ''}
+                  {addProjectsSelectedIds.size > 0 ? t('groupDetail.addCount', { count: String(addProjectsSelectedIds.size) }) : t('groupDetail.addProjects')}
                 </Button>
               </div>
             </div>

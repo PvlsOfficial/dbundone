@@ -6,6 +6,7 @@ import {
   SlidersHorizontal,
   Grid2X2,
   List,
+  GalleryHorizontalEnd,
   CheckSquare,
   X,
   Music,
@@ -21,7 +22,7 @@ import {
   Archive,
 } from "lucide-react"
 import { ProjectModal } from "../components/ProjectModal"
-import { Project, FilterOptions, AudioPlayerState, ProjectStatus, ProjectGroup, AppSettings, Tag } from "@shared/types"
+import { Project, FilterOptions, AudioPlayerState, ProjectStatus, ProjectGroup, AppSettings, Tag, PluginSession } from "@shared/types"
 import { cn } from "@/lib/utils"
 import { useToast } from "../components/ui/toast"
 import {
@@ -44,6 +45,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui"
 import { VirtualizedProjectGrid } from "../components/VirtualizedProjectGrid"
+import { useAuth } from "@/contexts/AuthContext"
+import { getSentShares } from "@/lib/sharingService"
+import { useI18n } from "@/i18n"
 
 interface DashboardProps {
   projects: Project[]
@@ -75,6 +79,7 @@ interface DashboardProps {
   onUpdateGroup: (groupId: string, updates: Partial<ProjectGroup>) => void
   onSettingsChange: (settings: Partial<AppSettings>) => void
   onOpenArtworkManager?: (project: Project) => void
+  pluginSessions?: PluginSession[]
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -100,6 +105,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onUpdateGroup,
   onSettingsChange,
   onOpenArtworkManager,
+  pluginSessions,
 }) => {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
@@ -112,7 +118,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
     dawFilter: null,
     genreFilter: null,
     artistFilter: null,
+    recordingFilter: null,
   })
+  const [projectVersionSources, setProjectVersionSources] = useState<Record<string, string[]>>({})
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set())
   const viewMode = settings.viewMode || "grid"
@@ -122,6 +130,45 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [searchInput, setSearchInput] = useState("")
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const { addToast } = useToast()
+  const { user, isAuthenticated } = useAuth()
+  const { t } = useI18n()
+
+  // Fetch share statuses from Supabase to color share icons
+  const [shareStatusMap, setShareStatusMap] = useState<Record<string, 'pending' | 'accepted' | 'mixed'>>({})
+  useEffect(() => {
+    if (!isAuthenticated || !user) {
+      setShareStatusMap({})
+      return
+    }
+    let cancelled = false
+    getSentShares(user.id).then(shares => {
+      if (cancelled) return
+      const statusByProject: Record<string, Set<string>> = {}
+      for (const share of shares) {
+        if (!share.projectLocalId) continue
+        if (!statusByProject[share.projectLocalId]) statusByProject[share.projectLocalId] = new Set()
+        statusByProject[share.projectLocalId].add(share.status)
+      }
+      const result: Record<string, 'pending' | 'accepted' | 'mixed'> = {}
+      for (const [pid, statuses] of Object.entries(statusByProject)) {
+        if (statuses.has('pending') && statuses.has('accepted')) result[pid] = 'mixed'
+        else if (statuses.has('accepted')) result[pid] = 'accepted'
+        else if (statuses.has('pending')) result[pid] = 'pending'
+      }
+      setShareStatusMap(result)
+    }).catch(err => console.warn('Failed to fetch share statuses:', err))
+    return () => { cancelled = true }
+  }, [isAuthenticated, user, projects])
+
+  // Load version sources for recording filter
+  useEffect(() => {
+    const isElectron = typeof window !== 'undefined' && typeof window.electron !== 'undefined'
+    if (isElectron) {
+      window.electron?.getProjectVersionSources?.().then(sources => {
+        setProjectVersionSources(sources || {})
+      }).catch(() => {})
+    }
+  }, [projects])
 
   // Debounced search: update actual filter after 200ms of idle typing
   const handleSearchChange = useCallback((value: string) => {
@@ -140,7 +187,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   }, [])
 
   // Update viewMode and persist to settings
-  const setViewMode = (mode: "grid" | "list") => {
+  const setViewMode = (mode: "grid" | "list" | "gallery") => {
     onSettingsChange({ viewMode: mode })
   }
 
@@ -244,6 +291,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
       )
     }
 
+    // Recording source filter
+    if (filters.recordingFilter && filters.recordingFilter.length > 0) {
+      result = result.filter((project) => {
+        const sources = projectVersionSources[project.id] || []
+        return filters.recordingFilter!.some(rf => {
+          if (rf === "has-recordings") return sources.includes("auto")
+          if (rf === "has-renders") return sources.includes("offline")
+          if (rf === "has-manual") return sources.includes("manual")
+          if (rf === "no-versions") return sources.length === 0
+          return false
+        })
+      })
+    }
+
     // Sort - Optimized with precomputed values
     switch (filters.sortBy) {
       case "name-asc":
@@ -290,7 +351,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
 
     return result
-  }, [projects, filters])
+  }, [projects, filters, projectVersionSources])
 
   // Memoize handlers to prevent unnecessary re-renders
   const handleProjectSelect = useCallback((project: Project) => {
@@ -366,6 +427,19 @@ export const Dashboard: React.FC<DashboardProps> = ({
     })
   }, [])
 
+  const handleRecordingFilterToggle = useCallback((filterKey: string) => {
+    setFilters(prev => {
+      const current = prev.recordingFilter || []
+      const updated = current.includes(filterKey)
+        ? current.filter(f => f !== filterKey)
+        : [...current, filterKey]
+      return {
+        ...prev,
+        recordingFilter: updated.length > 0 ? updated : null
+      }
+    })
+  }, [])
+
   const handleSelectAll = useCallback(() => {
     setSelectedProjects(prev => {
       if (prev.size === filteredProjects.length) {
@@ -419,7 +493,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <div className="p-2 rounded-xl bg-primary/10">
                 <Music className="w-6 h-6 text-primary" />
               </div>
-              <h1 className="text-2xl font-bold text-foreground">Projects</h1>
+              <h1 className="text-2xl font-bold text-foreground">{t('dashboard.title')}</h1>
               <Badge variant="secondary" className="text-sm">
                 {filteredProjects.length}
               </Badge>
@@ -433,17 +507,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 >
                   <Button variant="ghost" size="sm" onClick={handleSelectAll}>
                     {selectedProjects.size === filteredProjects.length
-                      ? "Deselect All"
-                      : "Select All"}
+                      ? t('dashboard.deselectAll')
+                      : t('dashboard.selectAll')}
                   </Button>
                   <span className="text-sm text-muted-foreground">
-                    {selectedProjects.size} selected
+                    {selectedProjects.size} {t('dashboard.selected')}
                   </span>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="outline" size="sm" disabled={selectedProjects.size === 0}>
                         <FolderPlus className="w-4 h-4 mr-2" />
-                        Add to Group
+                        {t('dashboard.addToGroup')}
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent>
@@ -468,7 +542,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     variant="outline"
                     size="sm"
                     onClick={async () => {
-                      const groupName = `Group ${groups.length + 1}`
+                      const groupName = `Collection ${groups.length + 1}`
                       await onCreateGroup(groupName, '', Array.from(selectedProjects))
                       setSelectedProjects(new Set())
                       setSelectionMode(false)
@@ -477,7 +551,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     disabled={selectedProjects.size === 0}
                   >
                     <FolderPlus className="w-4 h-4 mr-2" />
-                    Create Group
+                    {t('dashboard.createGroup')}
                   </Button>
                 </motion.div>
               )}
@@ -490,7 +564,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     className="gap-2 border-orange-500/50 text-orange-400 hover:bg-orange-500/10"
                   >
                     <X className="w-4 h-4" />
-                    Stop ({photoProgress.added}/{photoProgress.total})
+                    {t('dashboard.stop')} ({photoProgress.added}/{photoProgress.total})
                   </Button>
                 ) : (
                   <Button
@@ -500,7 +574,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     className="gap-2"
                   >
                     <Shuffle className="w-4 h-4" />
-                    Add Photos to All
+                    {t('dashboard.addPhotosToAll')}
                   </Button>
                 )
               )}
@@ -510,11 +584,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 onClick={handleToggleSelectionMode}
               >
                 <CheckSquare className="w-4 h-4 mr-2" />
-                {selectionMode ? "Done" : "Select"}
+                {selectionMode ? t('dashboard.done') : t('dashboard.select')}
               </Button>
               <Button onClick={handleNewProject} className="gap-2">
                 <Plus className="w-4 h-4" />
-                New Project
+                {t('dashboard.newProject')}
               </Button>
             </div>
           </div>
@@ -524,7 +598,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <div className="relative flex-1 max-w-md">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
-                placeholder="Search projects..."
+                placeholder={t('dashboard.search')}
                 value={searchInput}
                 onChange={(e) => handleSearchChange(e.target.value)}
                 className="pl-9 bg-muted/30"
@@ -551,20 +625,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
               }
             >
               <SelectTrigger className="w-44 bg-muted/30">
-                <SelectValue placeholder="Sort by" />
+                <SelectValue placeholder={t('dashboard.sortBy')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="date-newest">Newest First</SelectItem>
-                <SelectItem value="date-oldest">Oldest First</SelectItem>
-                <SelectItem value="name-asc">Name A-Z</SelectItem>
-                <SelectItem value="name-desc">Name Z-A</SelectItem>
-                <SelectItem value="bpm-asc">BPM Low-High</SelectItem>
-                <SelectItem value="bpm-desc">BPM High-Low</SelectItem>
-                <SelectItem value="time-spent-asc">Time Spent Low-High</SelectItem>
-                <SelectItem value="time-spent-desc">Time Spent High-Low</SelectItem>
-                <SelectItem value="key">Musical Key</SelectItem>
-                <SelectItem value="tags-asc">Tags A-Z</SelectItem>
-                <SelectItem value="tags-desc">Tags Z-A</SelectItem>
+                <SelectItem value="date-newest">{t('dashboard.sort.dateNewest')}</SelectItem>
+                <SelectItem value="date-oldest">{t('dashboard.sort.dateOldest')}</SelectItem>
+                <SelectItem value="name-asc">{t('dashboard.sort.nameAsc')}</SelectItem>
+                <SelectItem value="name-desc">{t('dashboard.sort.nameDesc')}</SelectItem>
+                <SelectItem value="bpm-asc">{t('dashboard.sort.bpmAsc')}</SelectItem>
+                <SelectItem value="bpm-desc">{t('dashboard.sort.bpmDesc')}</SelectItem>
+                <SelectItem value="time-spent-asc">{t('dashboard.sort.timeSpentAsc')}</SelectItem>
+                <SelectItem value="time-spent-desc">{t('dashboard.sort.timeSpentDesc')}</SelectItem>
+                <SelectItem value="key">{t('dashboard.sort.key')}</SelectItem>
+                <SelectItem value="tags-asc">{t('dashboard.sort.tagsAsc')}</SelectItem>
+                <SelectItem value="tags-desc">{t('dashboard.sort.tagsDesc')}</SelectItem>
               </SelectContent>
             </Select>
 
@@ -595,7 +669,24 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <Grid2X2 className="w-4 h-4" />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent>Grid View</TooltipContent>
+                <TooltipContent>{t('dashboard.gridView')}</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => setViewMode("gallery")}
+                    aria-label="Gallery view"
+                    className={cn(
+                      "p-1.5 rounded-md transition-colors",
+                      viewMode === "gallery"
+                        ? "bg-primary text-primary-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <GalleryHorizontalEnd className="w-4 h-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{t('dashboard.galleryView')}</TooltipContent>
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -612,7 +703,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <List className="w-4 h-4" />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent>List View</TooltipContent>
+                <TooltipContent>{t('dashboard.listView')}</TooltipContent>
               </Tooltip>
             </div>
           </div>
@@ -629,15 +720,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <div className="mt-4 pt-4 border-t border-border/30 space-y-4">
                   {/* Status Filter - Always show, especially important for Kanban */}
                   <div className="space-y-2">
-                    <label className="text-sm font-medium text-foreground">Status</label>
+                    <label className="text-sm font-medium text-foreground">{t('dashboard.filter.status')}</label>
                     <div className="flex flex-wrap gap-2">
                       {[
-                        { id: "idea", title: "Idea", icon: <Lightbulb className="w-3.5 h-3.5" />, color: "text-purple-600 dark:text-purple-400", bgColor: "bg-purple-500/15 dark:bg-purple-500/10" },
-                        { id: "in-progress", title: "In Progress", icon: <Music className="w-3.5 h-3.5" />, color: "text-blue-600 dark:text-blue-400", bgColor: "bg-blue-500/15 dark:bg-blue-500/10" },
-                        { id: "mixing", title: "Mixing", icon: <Headphones className="w-3.5 h-3.5" />, color: "text-orange-600 dark:text-orange-400", bgColor: "bg-orange-500/15 dark:bg-orange-500/10" },
-                        { id: "mastering", title: "Mastering", icon: <Disc3 className="w-3.5 h-3.5" />, color: "text-cyan-600 dark:text-cyan-400", bgColor: "bg-cyan-500/15 dark:bg-cyan-500/10" },
-                        { id: "completed", title: "Completed", icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: "text-green-600 dark:text-green-400", bgColor: "bg-green-500/15 dark:bg-green-500/10" },
-                        { id: "released", title: "Released", icon: <PartyPopper className="w-3.5 h-3.5" />, color: "text-pink-600 dark:text-pink-400", bgColor: "bg-pink-500/15 dark:bg-pink-500/10" },
+                        { id: "idea", titleKey: "dashboard.status.idea" as const, icon: <Lightbulb className="w-3.5 h-3.5" />, color: "text-purple-600 dark:text-purple-400", bgColor: "bg-purple-500/15 dark:bg-purple-500/10" },
+                        { id: "in-progress", titleKey: "dashboard.status.inProgress" as const, icon: <Music className="w-3.5 h-3.5" />, color: "text-blue-600 dark:text-blue-400", bgColor: "bg-blue-500/15 dark:bg-blue-500/10" },
+                        { id: "mixing", titleKey: "dashboard.status.mixing" as const, icon: <Headphones className="w-3.5 h-3.5" />, color: "text-orange-600 dark:text-orange-400", bgColor: "bg-orange-500/15 dark:bg-orange-500/10" },
+                        { id: "mastering", titleKey: "dashboard.status.mastering" as const, icon: <Disc3 className="w-3.5 h-3.5" />, color: "text-cyan-600 dark:text-cyan-400", bgColor: "bg-cyan-500/15 dark:bg-cyan-500/10" },
+                        { id: "completed", titleKey: "dashboard.status.completed" as const, icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: "text-green-600 dark:text-green-400", bgColor: "bg-green-500/15 dark:bg-green-500/10" },
+                        { id: "released", titleKey: "dashboard.status.released" as const, icon: <PartyPopper className="w-3.5 h-3.5" />, color: "text-pink-600 dark:text-pink-400", bgColor: "bg-pink-500/15 dark:bg-pink-500/10" },
                       ].map((status) => (
                         <button
                           key={status.id}
@@ -650,7 +741,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                           )}
                         >
                           {status.icon}
-                          {status.title}
+                          {t(status.titleKey)}
                         </button>
                       ))}
                     </div>
@@ -659,7 +750,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   {/* Tags Filter - Show for all views */}
                   {availableTags.length > 0 && (
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">Tags</label>
+                      <label className="text-sm font-medium text-foreground">{t('dashboard.filter.tags')}</label>
                       <div className="flex flex-wrap gap-2">
                         {availableTags.map((tag) => {
                           const tagInfo = tags.find(t => t.name === tag);
@@ -690,7 +781,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   {/* DAW Type Filter */}
                   {availableDaws.length > 0 && (
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">DAW</label>
+                      <label className="text-sm font-medium text-foreground">{t('dashboard.filter.daw')}</label>
                       <div className="flex flex-wrap gap-2">
                         {availableDaws.map((daw) => (
                           <button
@@ -713,7 +804,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   {/* Genre Filter */}
                   {availableGenres.length > 0 && (
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">Genre</label>
+                      <label className="text-sm font-medium text-foreground">{t('dashboard.filter.genre')}</label>
                       <div className="flex flex-wrap gap-2">
                         {availableGenres.map((genre) => (
                           <button
@@ -736,7 +827,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   {/* Artist Filter */}
                   {availableArtists.length > 0 && (
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">Artist</label>
+                      <label className="text-sm font-medium text-foreground">{t('dashboard.filter.artist')}</label>
                       <div className="flex flex-wrap gap-2">
                         {availableArtists.map((artist) => (
                           <button
@@ -756,8 +847,34 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     </div>
                   )}
 
+                  {/* Recording Type Filter */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">{t('dashboard.filter.recordings')}</label>
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        { key: "has-manual", labelKey: "dashboard.recording.hasManual" as const },
+                        { key: "has-recordings", labelKey: "dashboard.recording.hasRecordings" as const },
+                        { key: "has-renders", labelKey: "dashboard.recording.hasRenders" as const },
+                        { key: "no-versions", labelKey: "dashboard.recording.noVersions" as const },
+                      ].map(({ key, labelKey }) => (
+                        <button
+                          key={key}
+                          onClick={() => handleRecordingFilterToggle(key)}
+                          className={cn(
+                            "px-3 py-1.5 rounded-full text-sm font-medium transition-all",
+                            filters.recordingFilter?.includes(key)
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          )}
+                        >
+                          {t(labelKey)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   {/* Clear All Filters */}
-                  {(filters.selectedTags.length > 0 || filters.statusFilter?.length || filters.dawFilter?.length || filters.genreFilter?.length || filters.artistFilter?.length) && (
+                  {(filters.selectedTags.length > 0 || filters.statusFilter?.length || filters.dawFilter?.length || filters.genreFilter?.length || filters.artistFilter?.length || filters.recordingFilter?.length) && (
                     <div className="pt-2">
                       <button
                         onClick={() => setFilters({
@@ -767,10 +884,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
                           dawFilter: null,
                           genreFilter: null,
                           artistFilter: null,
+                          recordingFilter: null,
                         })}
                         className="px-3 py-1.5 rounded-full text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors"
                       >
-                        Clear all filters
+                        {t('dashboard.filter.clearAll')}
                       </button>
                     </div>
                   )}
@@ -805,6 +923,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 unsplashEnabled={settings.unsplashEnabled}
                 aiArtworkEnabled={settings.autoGenerateArtwork}
                 onOpenArtworkManager={onOpenArtworkManager}
+                pluginSessions={pluginSessions}
+                shareStatusMap={shareStatusMap}
               />
             ) : (
               <motion.div
@@ -821,17 +941,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   </div>
                 </div>
                 <h2 className="text-xl font-semibold text-foreground mb-2">
-                  {filters.searchQuery ? "No projects found" : "No projects yet"}
+                  {filters.searchQuery ? t('dashboard.noProjectsFound') : t('dashboard.noProjects')}
                 </h2>
                 <p className="text-muted-foreground mb-6 text-center max-w-md">
                   {filters.searchQuery
-                    ? "Try adjusting your search or filters"
-                    : "Create your first project or scan your DAW project folders to get started"}
+                    ? t('dashboard.noProjectsSearchHint')
+                    : t('dashboard.noProjectsHint')}
                 </p>
                 <div className="flex items-center gap-3">
                   <Button onClick={handleNewProject} className="gap-2">
                     <Plus className="w-4 h-4" />
-                    Create Project
+                    {t('dashboard.createProject')}
                   </Button>
                 </div>
               </motion.div>

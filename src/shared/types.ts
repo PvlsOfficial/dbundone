@@ -22,7 +22,13 @@ export interface Project {
   timeSpent?: number | null // in minutes, for time tracking
   genre?: string | null
   artists?: string | null
+  sortOrder: number
+  shareCount?: number
+  pluginLinked?: boolean
 }
+
+// Audio version source types
+export type AudioVersionSource = "manual" | "auto" | "offline"
 
 // Audio Version for version control
 export interface AudioVersion {
@@ -31,8 +37,13 @@ export interface AudioVersion {
   name: string
   filePath: string
   notes: string | null
+  source: AudioVersionSource
   versionNumber: number
   createdAt: string
+  peakDb?: number | null
+  rmsDb?: number | null
+  lufsIntegrated?: number | null
+  analysisPath?: string | null
 }
 
 // Annotation for audio timestamps
@@ -44,6 +55,11 @@ export interface Annotation {
   color: string
   createdAt: string
   updatedAt: string
+  // Task extension
+  isTask?: boolean
+  taskStatus?: "todo" | "in-progress" | "done" | null
+  taskPriority?: "low" | "medium" | "high" | "urgent" | null
+  taskDueDate?: string | null
 }
 
 export interface ProjectGroup {
@@ -142,6 +158,53 @@ export interface ArtworkHistoryEntry {
   createdAt: string
 }
 
+// VST3 Plugin Session
+export interface PluginSession {
+  sessionId: string
+  pluginId: string
+  pluginName: string
+  dawName: string
+  trackName: string | null
+  linkedProjectId: string | null
+  /** The project the plugin was previously linked to (for auto-relink) */
+  lastProjectId: string | null
+  isRecording: boolean
+  isArmed: boolean
+  gainDb: number
+  autoRecord: boolean
+  captureOfflineRenders: boolean
+  connectedAt: string
+}
+
+// Plugin events emitted from the WebSocket server
+export interface PluginEvent {
+  type:
+    | "pluginConnected"
+    | "pluginDisconnected"
+    | "pluginLinkedProject"
+    | "pluginUnlinkedProject"
+    | "pluginRecordingComplete"
+    | "pluginRecordingProgress"
+    | "pluginStateUpdate"
+    | "sessionsChanged"
+  session?: PluginSession
+  sessionId?: string
+  projectId?: string
+  filePath?: string
+  name?: string
+  durationSecs?: number
+  sampleRate?: number
+  channels?: number
+  peakLevel?: number
+  sessions?: PluginSession[]
+  /** Source of the recording: "auto" or "offline" */
+  source?: string
+  /** Peak level in dBFS measured during recording */
+  peakDb?: number
+  /** RMS level in dBFS measured during recording */
+  rmsDb?: number
+}
+
 export interface FilterOptions {
   searchQuery: string
   sortBy: "name-asc" | "name-desc" | "date-newest" | "date-oldest" | "bpm-asc" | "bpm-desc" | "time-spent-asc" | "time-spent-desc" | "key" | "tags-asc" | "tags-desc"
@@ -151,6 +214,8 @@ export interface FilterOptions {
   dawFilter: string[] | null
   genreFilter: string[] | null
   artistFilter: string[] | null
+  /** Filter by recording/version source type: "has-recordings", "has-renders", "has-manual" */
+  recordingFilter: string[] | null
 }
 
 export interface AudioPlayerState {
@@ -171,14 +236,54 @@ export interface AppSettings {
   autoGenerateArtwork: boolean
   excludeAutosaves: boolean
   selectedDAWs: string[]
-  dawFolders: Record<string, string | null>
-  viewMode: "grid" | "list"
+  dawFolders: Record<string, string[]>
+  viewMode: "grid" | "list" | "gallery"
   gridSize: "small" | "medium" | "large"
   unsplashEnabled: boolean
+  sampleFolders: string[]
+  autoScanOnStartup: boolean
+  defaultSort: "date-newest" | "date-oldest" | "name-asc" | "name-desc" | "bpm-asc" | "bpm-desc" | "time-spent-asc" | "time-spent-desc" | "key" | "tags-asc" | "tags-desc"
+  notificationsEnabled: boolean
+  notifyOnShare: boolean
+  notifyOnAnnotation: boolean
+  notifyOnStatusChange: boolean
+  confirmDestructiveActions: boolean
+  language: "en" | "de" | "es" | "fr" | "ja" | "pt" | "ro"
+  hasSeenTour: boolean
+  featureRequests: { id: string; text: string; votes: number; createdAt: string }[]
 }
 
-// Supported DAWs - only these are implemented
-export const SUPPORTED_DAWS = ["FL Studio", "Ableton Live"] as const
+// Supported DAWs
+export const SUPPORTED_DAWS = [
+  "FL Studio",
+  "Ableton Live",
+  "Logic Pro",
+  "Pro Tools",
+  "Cubase",
+  "Fender Studio Pro",
+  "Bitwig Studio",
+  "Reaper",
+  "Reason",
+  "GarageBand",
+  "LMMS",
+  "Cakewalk",
+] as const
+
+/** File extensions for each DAW (used for display & detection) */
+export const DAW_EXTENSIONS: Record<string, string[]> = {
+  "FL Studio": [".flp"],
+  "Ableton Live": [".als"],
+  "Logic Pro": [".logicx"],
+  "Pro Tools": [".ptx", ".pts"],
+  "Cubase": [".cpr"],
+  "Fender Studio Pro": [".song"],
+  "Bitwig Studio": [".bwproject"],
+  "Reaper": [".rpp"],
+  "Reason": [".reason"],
+  "GarageBand": [".band"],
+  "LMMS": [".mmp", ".mmpz"],
+  "Cakewalk": [".cwp"],
+}
 
 export const DEFAULT_SETTINGS: AppSettings = {
   flStudioPath: null,
@@ -194,6 +299,100 @@ export const DEFAULT_SETTINGS: AppSettings = {
   viewMode: "grid",
   gridSize: "medium",
   unsplashEnabled: true,
+  sampleFolders: [],
+  autoScanOnStartup: true,
+  defaultSort: "date-newest",
+  notificationsEnabled: true,
+  notifyOnShare: true,
+  notifyOnAnnotation: true,
+  notifyOnStatusChange: true,
+  confirmDestructiveActions: true,
+  language: "en",
+  hasSeenTour: false,
+  featureRequests: [],
+}
+
+// ── FLP Analysis Types ──────────────────────────────────────────────────────
+
+export interface FlpChannel {
+  index: number
+  name: string | null
+  channelType: string // "sampler" | "generator" | "layer" | "audio_clip" | "unknown"
+  pluginName: string | null
+  samplePath: string | null
+  color: string | null
+  mixerTrack: number | null
+}
+
+export interface FlpMixerTrack {
+  index: number
+  name: string | null
+  color: string | null
+  plugins: string[]
+}
+
+export interface FlpPattern {
+  index: number
+  name: string | null
+}
+
+export interface FlpPlugin {
+  name: string
+  dllName: string | null
+  channelName: string | null
+  channelIndex: number | null
+  isInstrument: boolean
+  presetName: string | null
+}
+
+export interface FlpAnalysis {
+  plugins: FlpPlugin[]
+  samples: string[]
+  channels: FlpChannel[]
+  mixerTracks: FlpMixerTrack[]
+  patterns: FlpPattern[]
+  flVersion: string | null
+}
+
+// ── User Profile ────────────────────────────────────────────────────────────
+
+export interface UserProfile {
+  id: string
+  displayName: string
+  avatarPath: string | null
+  bio: string | null
+  createdAt: string
+}
+
+// ── Collaboration ───────────────────────────────────────────────────────────
+
+export interface ProjectShare {
+  id: string
+  projectId: string
+  shareToken: string
+  sharedWith: string | null
+  permissions: "view" | "edit" | "admin"
+  message: string | null
+  createdBy: string | null
+  createdAt: string
+  expiresAt: string | null
+}
+
+// ── Onboarding ──────────────────────────────────────────────────────────────
+
+export interface OnboardingState {
+  completedSteps: string[]
+  dismissed: boolean
+  currentStep: number
+}
+
+export interface OnboardingStep {
+  id: string
+  title: string
+  description: string
+  targetSelector?: string // CSS selector for highlighting
+  position?: "top" | "bottom" | "left" | "right"
+  icon?: string
 }
 
 // IPC Channel names
@@ -273,5 +472,43 @@ export const IPC_CHANNELS = {
   DB_CREATE_ANNOTATION: "db:create-annotation",
   DB_UPDATE_ANNOTATION: "db:update-annotation",
   DB_DELETE_ANNOTATION: "db:delete-annotation",
+
+  // Plugin session management
+  PLUGIN_GET_SESSIONS: "plugin:get-sessions",
+  PLUGIN_GET_SESSIONS_FOR_PROJECT: "plugin:get-sessions-for-project",
+  PLUGIN_LINK: "plugin:link",
+  PLUGIN_UNLINK: "plugin:unlink",
+  PLUGIN_START_RECORDING: "plugin:start-recording",
+  PLUGIN_STOP_RECORDING: "plugin:stop-recording",
+  PLUGIN_GET_PORT: "plugin:get-port",
+  PLUGIN_SEND_PROJECTS: "plugin:send-projects",
+  PLUGIN_IMPORT_RECORDING: "plugin:import-recording",
+  PLUGIN_EVENT: "plugin-event",
+
+  // FLP Analysis
+  ANALYZE_FLP_PROJECT: "flp:analyze",
+  CLEAR_FLP_ANALYSIS_CACHE: "flp:clear-cache",
+
+  // User Profile
+  GET_USER_PROFILE: "user:get-profile",
+  UPDATE_USER_PROFILE: "user:update-profile",
+
+  // Collaboration
+  CREATE_PROJECT_SHARE: "share:create",
+  GET_PROJECT_SHARES: "share:get",
+  DELETE_PROJECT_SHARE: "share:delete",
+
+  // Onboarding
+  GET_ONBOARDING_STATE: "onboarding:get",
+  UPDATE_ONBOARDING_STATE: "onboarding:update",
+
+  // Annotation-Task conversion
+  CONVERT_ANNOTATION_TO_TASK: "annotation:to-task",
+  UNCONVERT_ANNOTATION_FROM_TASK: "annotation:from-task",
+  UPDATE_ANNOTATION_TASK: "annotation:update-task",
+  GET_TASK_ANNOTATIONS: "annotation:get-tasks",
+
+  // Screenshot
+  CAPTURE_WINDOW_SCREENSHOT: "screenshot:capture",
 
 } as const

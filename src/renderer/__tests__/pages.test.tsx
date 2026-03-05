@@ -28,7 +28,7 @@ const mockProjects: Project[] = [
     musicalKey: 'C minor', tags: ['trap'], collectionName: 'Album',
     status: 'in-progress', favoriteVersionId: null,
     createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-06-01T00:00:00Z',
-    fileModifiedAt: null, archived: false, timeSpent: 60,
+    fileModifiedAt: null, archived: false, timeSpent: 60, sortOrder: 0,
   },
   {
     id: 'p2', title: 'Chill Vibes', artworkPath: null, audioPreviewPath: null,
@@ -36,7 +36,7 @@ const mockProjects: Project[] = [
     musicalKey: 'G major', tags: ['chill'], collectionName: 'EP',
     status: 'completed', favoriteVersionId: null,
     createdAt: '2025-02-01T00:00:00Z', updatedAt: '2025-07-01T00:00:00Z',
-    fileModifiedAt: null, archived: false, timeSpent: 180,
+    fileModifiedAt: null, archived: false, timeSpent: 180, sortOrder: 0,
   },
 ];
 

@@ -1,237 +1,210 @@
-# DBundone - Music Project Manager
+# DBundone — Music Project Manager
 
-A lightweight, offline-first desktop application for managing music production projects. Built with Electron, React, and SQLite.
+<p align="center">
+  <img src="assets/logo%20dbundone.svg" alt="DBundone logo" width="120" />
+</p>
 
-![DBundone Screenshot](assets/screenshot.png)
+<p align="center">
+  <strong>Offline-first desktop app for organising, analysing, and sharing music production projects.</strong><br />
+  Built with <a href="https://v2.tauri.app">Tauri v2</a>, React 18, and Rust.
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#project-structure">Structure</a> ·
+  <a href="#vst-plugin">VST Plugin</a> ·
+  <a href="#website">Website</a> ·
+  <a href="#contributing">Contributing</a> ·
+  <a href="#license">License</a>
+</p>
+
+---
 
 ## Features
 
-### 📁 Project Management
-- **Project Grid**: Visual grid layout with rounded cards displaying project artwork
-- **Rich Metadata**: Store BPM, musical key, tags, and collection names
-- **DAW Integration**: Quick-launch projects directly in your DAW
-- **Audio Previews**: Built-in audio player with waveform visualization
+| Category | Highlights |
+|----------|-----------|
+| **Project Management** | Grid / List / Gallery views, rich metadata (BPM, key, tags, collections), DAW quick-launch, artwork generation |
+| **Audio Previews** | Built-in player with WaveSurfer.js waveform, scrub, volume control |
+| **FLP Analysis** | Deep-parse FL Studio projects — plugins, samples, mixer tracks, patterns, channel racks |
+| **Collections** | Organise projects into named collections with custom artwork & descriptions |
+| **Task Board** | Kanban-style scheduler (To Do → In Progress → Done) with due-date tracking |
+| **Statistics** | Plugin usage heatmaps, sample pack rankings, most reused individual samples, FL version distribution |
+| **Sharing** | Supabase-backed collaboration — share projects, accept/decline, real-time status |
+| **VST Bridge** | Companion CLAP/VST3 plugin sends live session data (play state, BPM, transport) to the app via WebSocket |
+| **ZIP Import** | Import `.zip` archives containing FLP projects directly from the file picker |
+| **Internationalization** | 7 languages — English, German, Spanish, French, Japanese, Portuguese, Romanian |
+| **Guided Tour** | 21-step interactive app tour for new users |
+| **Theming** | Dark / Light / System themes with accent-colour customisation |
 
-### 🎵 Audio Player
-- Play/pause, stop, previous/next controls
-- Visual waveform display using WaveSurfer.js
-- Volume control with dB level indicator
-- Progress bar with seek functionality
+## Screenshots
 
-### 📂 Project Groups
-- Organize projects into custom groups
-- Custom group artwork and descriptions
-- Easy project selection interface
+> Add screenshots to `assets/` and reference them here.
 
-### ✅ Task Scheduler
-- Kanban-style board with three columns: To Do, In Progress, Done
-- Drag-and-drop task management
-- Due date tracking with overdue indicators
-- Task descriptions and notes
-
-### 🔍 Search & Filter
-- Full-text search across project titles, collections, and tags
-- Sort by name, date, BPM, or musical key
-- Tag-based filtering
-
-## Installation
+## Quickstart
 
 ### Prerequisites
-- Node.js 18 or higher
-- npm or yarn
 
-### Setup
+| Tool | Version |
+|------|---------|
+| **Node.js** | ≥ 18 |
+| **Rust** | ≥ 1.77 (install via [rustup](https://rustup.rs)) |
+| **Tauri CLI** | `npm i -g @tauri-apps/cli@^2` |
 
-1. Clone the repository:
+Platform-specific Tauri v2 dependencies: <https://v2.tauri.app/start/prerequisites/>
+
+### Install & Run
+
 ```bash
-git clone https://github.com/yourusername/dbundone.git
+# 1. Clone
+git clone https://github.com/YOUR_USERNAME/dbundone.git
 cd dbundone
-```
 
-2. Install dependencies:
-```bash
+# 2. Install JS dependencies
 npm install
-```
 
-3. Start development server:
-```bash
+# 3. Start Tauri dev server (compiles Rust + launches app)
 npm run dev
 ```
 
-4. Build for production:
+### Build for Production
+
 ```bash
-npm run build
+npm run build          # NSIS installer → src-tauri/target/release/bundle/
 ```
-
-5. Package the application:
-```bash
-# For Windows
-npm run package:win
-
-# For macOS
-npm run package:mac
-
-# For Linux
-npm run package:linux
-```
-
-## Usage
-
-### Creating a Project
-
-1. Click the **"New Project"** button in the dashboard
-2. Fill in the project details:
-   - **Title**: Required project name
-   - **Artwork**: Click to select an image file
-   - **BPM**: Enter the tempo
-   - **Key**: Select the musical key
-   - **Tags**: Add searchable tags
-   - **Collection**: Group by album/EP name
-   - **Audio Preview**: Select an audio file for preview
-   - **DAW Project**: Link to your DAW project file
-
-### Playing Audio Previews
-
-- Hover over a project card and click the play button
-- Use the audio player bar at the bottom for playback controls
-- Click on the waveform to seek to a specific position
-
-### Opening in DAW
-
-- Click the DAW icon on the project card to open the linked project file
-- Supported formats: Ableton (.als), FL Studio (.flp), Logic Pro (.logic), Pro Tools (.ptx), Cubase (.cpr), Reaper (.rpp)
-
-### Creating Groups
-
-1. Navigate to the **Groups** section
-2. Click **"New Group"**
-3. Add a name and optional description
-4. Click **"Select Projects"** to add projects to the group
-
-### Managing Tasks
-
-1. Navigate to the **Tasks** section
-2. Click **"Add task"** in any column
-3. Fill in the task details
-4. Drag and drop tasks between columns
 
 ## Project Structure
 
 ```
 dbundone/
 ├── src/
-│   ├── main/              # Electron main process
-│   │   ├── main.ts        # Main entry point
-│   │   ├── preload.ts     # Preload script
-│   │   └── database.ts    # SQLite database operations
-│   ├── renderer/          # React frontend
-│   │   ├── components/    # Reusable components
-│   │   ├── pages/         # Page components
-│   │   ├── styles/        # Global styles
-│   │   ├── App.tsx        # Main App component
-│   │   └── main.tsx       # Renderer entry point
-│   └── shared/            # Shared types
-│       └── types.ts       # TypeScript interfaces
-├── assets/                # Static assets
-├── package.json
-├── tsconfig.json
-└── vite.config.ts
+│   ├── renderer/          # React 18 + TypeScript frontend
+│   │   ├── components/    # Reusable UI components (ProjectCard, AudioPlayer, …)
+│   │   ├── pages/         # Route pages (Dashboard, Statistics, Settings, …)
+│   │   ├── contexts/      # React contexts (auth, theme)
+│   │   ├── hooks/         # Custom hooks
+│   │   ├── i18n/          # Translations (en, de, es, fr, ja, pt, ro)
+│   │   ├── lib/           # Utilities, Supabase client, Tauri API bridge
+│   │   ├── styles/        # Global CSS
+│   │   └── types/         # Frontend-only types
+│   └── shared/
+│       └── types.ts       # Types shared between renderer & Tauri
+├── src-tauri/             # Tauri v2 Rust backend
+│   ├── src/
+│   │   ├── lib.rs         # Plugin registration & command setup
+│   │   ├── commands.rs    # IPC command handlers
+│   │   ├── database.rs    # SQLite (rusqlite) schema & queries
+│   │   ├── scanner.rs     # Folder scanner, ZIP extractor
+│   │   ├── flp_parser.rs  # FL Studio .flp binary parser
+│   │   ├── audio_analysis.rs  # Audio feature extraction (symphonia)
+│   │   └── websocket.rs   # WebSocket server for VST bridge
+│   ├── Cargo.toml
+│   └── tauri.conf.json
+├── dbundone-vst/          # Companion CLAP / VST3 plugin (Rust)
+│   ├── plugins/
+│   │   └── dbundone-bridge/   # NIH-plug based bridge plugin
+│   └── xtask/                 # Build helper (bundle task)
+├── website/               # Next.js 16 marketing site
+│   ├── src/app/           # App Router pages (/, /docs, /pricing, /blog, …)
+│   ├── src/components/    # Landing page sections, shared UI
+│   └── src/content/       # MDX blog posts & docs
+├── assets/                # Icons, logo, intro audio
+├── supabase-schema.sql    # Supabase database schema for sharing features
+├── package.json           # Root workspace scripts
+└── LICENSE                # MIT
 ```
 
-## Database Schema
+## Tech Stack
 
-### Projects Table
-| Column | Type | Description |
-|--------|------|-------------|
-| id | TEXT | Primary key (UUID) |
-| title | TEXT | Project name |
-| artwork_path | TEXT | Path to artwork image |
-| audio_preview_path | TEXT | Path to audio preview |
-| daw_project_path | TEXT | Path to DAW project file |
-| daw_type | TEXT | DAW type (e.g., "Ableton Live") |
-| bpm | INTEGER | Beats per minute |
-| musical_key | TEXT | Musical key |
-| tags | TEXT | JSON array of tags |
-| collection_name | TEXT | Collection/album name |
-| created_at | TEXT | Creation timestamp |
-| updated_at | TEXT | Last update timestamp |
+| Layer | Technology |
+|-------|-----------|
+| Desktop framework | Tauri v2 |
+| Frontend | React 18 · TypeScript · Vite 5 · Tailwind CSS 3 |
+| Backend | Rust (2021 edition) · rusqlite · symphonia · tokio |
+| UI primitives | Radix UI · shadcn/ui · Framer Motion · Lucide icons |
+| Audio | WaveSurfer.js (waveform) · symphonia (analysis) |
+| Cloud (optional) | Supabase (auth + sharing) · Stripe (payments) |
+| VST plugin | NIH-plug (CLAP + VST3) · WebSocket bridge |
+| Website | Next.js 16 · React 19 · Tailwind CSS 4 · MDX |
 
-### Groups Table
-| Column | Type | Description |
-|--------|------|-------------|
-| id | TEXT | Primary key (UUID) |
-| name | TEXT | Group name |
-| artwork_path | TEXT | Path to group artwork |
-| description | TEXT | Group description |
-| project_ids | TEXT | JSON array of project IDs |
-| created_at | TEXT | Creation timestamp |
-| updated_at | TEXT | Last update timestamp |
+## VST Plugin
 
-### Tasks Table
-| Column | Type | Description |
-|--------|------|-------------|
-| id | TEXT | Primary key (UUID) |
-| title | TEXT | Task title |
-| description | TEXT | Task description |
-| status | TEXT | Status (todo/in-progress/done) |
-| due_date | TEXT | Due date |
-| task_order | INTEGER | Order within column |
-| created_at | TEXT | Creation timestamp |
-| updated_at | TEXT | Last update timestamp |
+The `dbundone-vst/` directory contains a companion **CLAP / VST3** plugin built with [NIH-plug](https://github.com/robbert-vdh/nih-plug). When loaded in your DAW, it connects to the desktop app over a local WebSocket and streams live session data (transport state, BPM, project info).
 
-## Configuration
+### Building the Plugin
 
-Data is stored in the user's application data folder:
-- **Windows**: `%APPDATA%/dbundone/`
-- **macOS**: `~/Library/Application Support/dbundone/`
-- **Linux**: `~/.config/dbundone/`
+```bash
+cd dbundone-vst
+cargo xtask bundle dbundone-bridge --release
+# Output: target/bundled/dbundone-bridge.clap  +  dbundone-bridge.vst3/
+```
+
+Copy the resulting files to your system's plugin folder.
+
+## Website
+
+The `website/` directory is a **Next.js 16** marketing site with pages for landing, docs, blog, changelog, pricing, privacy, terms, and downloads.
+
+### Local Development
+
+```bash
+cd website
+npm install
+npm run dev       # http://localhost:3000
+```
+
+### Deployment
+
+The site is designed for deployment on **Vercel** (or any platform supporting Next.js App Router). Required environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `STRIPE_SECRET_KEY` | Stripe secret key (server-side only) |
+| `STRIPE_PRICE_PRO` | Stripe Price ID for the Pro tier |
+| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
+
+> A `.env.example` is provided in the `website/` directory.
+
+## Environment Variables
+
+### Main App
+
+The desktop app embeds a **Supabase anon/publishable key** in `src/renderer/lib/supabase.ts` — this is safe for client-side use (protected by Row Level Security). No `.env` file is required for the desktop app to function.
+
+### Website (`website/.env.example`)
+
+Copy `website/.env.example` to `website/.env.local` and fill in your Stripe credentials.
+
+## Database
+
+Local project data is stored in an **SQLite** database in the user's app-data directory:
+
+| OS | Path |
+|----|------|
+| Windows | `%APPDATA%/com.dbundone.app/` |
+| macOS | `~/Library/Application Support/com.dbundone.app/` |
+| Linux | `~/.config/com.dbundone.app/` |
+
+For cloud sharing features, see `supabase-schema.sql` for the required Supabase tables.
 
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
-| `Space` | Play/Pause audio |
+| `Space` | Play / Pause audio preview |
 | `Escape` | Close modal |
-
-## Extending the Application
-
-### Adding New Features
-
-The application is designed to be extensible. Key extension points:
-
-1. **Database**: Add new tables in `src/main/database.ts`
-2. **IPC Channels**: Define new channels in `src/shared/types.ts`
-3. **Components**: Create new components in `src/renderer/components/`
-4. **Pages**: Add new pages in `src/renderer/pages/`
-
-### Future Considerations
-
-- Cloud sync integration
-- Plugin system for DAW-specific features
-- Export/import functionality
-- Batch operations
-- Advanced audio analysis
-
-## Tech Stack
-
-- **Electron**: Cross-platform desktop framework
-- **React**: UI library
-- **TypeScript**: Type-safe JavaScript
-- **SQLite (better-sqlite3)**: Embedded database
-- **Vite**: Build tool
-- **WaveSurfer.js**: Audio waveform visualization
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
+| `Ctrl+K` | Focus search |
 
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+2. Create a feature branch (`git checkout -b feat/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feat/amazing-feature`)
+5. Open a Pull Request
 
-## Support
+## License
 
-For issues and feature requests, please use the GitHub Issues page.
+[MIT](LICENSE) — © 2026 DBundone

@@ -26,6 +26,11 @@ pub struct Project {
     pub time_spent: Option<i64>,
     pub genre: Option<String>,
     pub artists: Option<String>,
+    pub sort_order: i64,
+    #[serde(default)]
+    pub share_count: i64,
+    #[serde(default)]
+    pub plugin_linked: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -70,8 +75,13 @@ pub struct AudioVersion {
     pub name: String,
     pub file_path: String,
     pub notes: Option<String>,
+    pub source: String, // "manual", "auto", "offline"
     pub version_number: i64,
     pub created_at: String,
+    pub peak_db: Option<f64>,
+    pub rms_db: Option<f64>,
+    pub lufs_integrated: Option<f64>,
+    pub analysis_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -94,6 +104,10 @@ pub struct Annotation {
     pub color: String,
     pub created_at: String,
     pub updated_at: String,
+    pub is_task: bool,
+    pub task_status: Option<String>,
+    pub task_priority: Option<String>,
+    pub task_due_date: Option<String>,
 }
 
 pub struct Database {
@@ -216,10 +230,100 @@ impl Database {
             "ALTER TABLE tasks ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL",
             "ALTER TABLE projects ADD COLUMN genre TEXT",
             "ALTER TABLE projects ADD COLUMN artists TEXT",
+            "ALTER TABLE projects ADD COLUMN sort_order INTEGER DEFAULT 0",
+            "ALTER TABLE audio_versions ADD COLUMN source TEXT DEFAULT 'manual'",
+            // Extended features - user profile
+            "ALTER TABLE annotations ADD COLUMN is_task INTEGER DEFAULT 0",
+            "ALTER TABLE annotations ADD COLUMN task_status TEXT DEFAULT 'todo'",
+            "ALTER TABLE annotations ADD COLUMN task_priority TEXT DEFAULT 'medium'",
+            "ALTER TABLE annotations ADD COLUMN task_due_date TEXT",
+            // Audio analysis columns
+            "ALTER TABLE audio_versions ADD COLUMN peak_db REAL",
+            "ALTER TABLE audio_versions ADD COLUMN rms_db REAL",
+            "ALTER TABLE audio_versions ADD COLUMN lufs_integrated REAL",
+            "ALTER TABLE audio_versions ADD COLUMN analysis_path TEXT",
+            // Plugin bridge persistent link flag
+            "ALTER TABLE projects ADD COLUMN plugin_linked INTEGER DEFAULT 0",
         ];
 
         for migration in migrations {
             let _ = conn.execute(migration, []);
+        }
+
+        // User profile table
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS user_profile (
+                id TEXT PRIMARY KEY DEFAULT 'default',
+                display_name TEXT NOT NULL DEFAULT 'Producer',
+                avatar_path TEXT,
+                bio TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT OR IGNORE INTO user_profile (id, display_name, created_at) VALUES ('default', 'Producer', datetime('now'));"
+        );
+
+        // Collaboration shares
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS project_shares (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                share_token TEXT NOT NULL UNIQUE,
+                shared_with TEXT,
+                permissions TEXT DEFAULT 'view',
+                message TEXT,
+                created_by TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_shares_project ON project_shares(project_id);
+            CREATE INDEX IF NOT EXISTS idx_shares_token ON project_shares(share_token);"
+        );
+
+        // Onboarding state
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS onboarding_state (
+                id TEXT PRIMARY KEY DEFAULT 'default',
+                completed_steps TEXT DEFAULT '[]',
+                dismissed INTEGER DEFAULT 0,
+                current_step INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT OR IGNORE INTO onboarding_state (id, created_at) VALUES ('default', datetime('now'));"
+        );
+
+        // FLP analysis cache
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS flp_analysis_cache (
+                project_id TEXT PRIMARY KEY,
+                analysis_json TEXT NOT NULL,
+                file_hash TEXT,
+                analyzed_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );"
+        );
+
+        // Versioned cache: clear stale analysis when format changes
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS _cache_version (
+                key TEXT PRIMARY KEY,
+                version INTEGER NOT NULL
+            );"
+        );
+        let current_analysis_version: i64 = 2; // bump when analysis JSON format changes
+        let stored_version: i64 = conn
+            .query_row(
+                "SELECT version FROM _cache_version WHERE key = 'flp_analysis'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if stored_version < current_analysis_version {
+            let _ = conn.execute_batch("DELETE FROM flp_analysis_cache;");
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO _cache_version (key, version) VALUES ('flp_analysis', ?1)",
+                rusqlite::params![current_analysis_version],
+            );
         }
 
         Ok(())
@@ -230,7 +334,13 @@ impl Database {
     pub fn get_projects(&self) -> Result<Vec<Project>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT * FROM projects ORDER BY created_at DESC")
+            .prepare(
+                "SELECT p.*, COALESCE(s.cnt, 0) as share_count
+                 FROM projects p
+                 LEFT JOIN (SELECT project_id, COUNT(*) as cnt FROM project_shares GROUP BY project_id) s
+                 ON p.id = s.project_id
+                 ORDER BY p.created_at DESC"
+            )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| Ok(Self::map_row_to_project(row)))
@@ -363,6 +473,7 @@ impl Database {
         add_field!("genre", "genre");
         add_field!("artists", "artists");
         add_field!("createdAt", "created_at");
+        add_field!("sortOrder", "sort_order");
 
         if let Some(tags) = updates.get("tags") {
             set_clauses.push("tags = ?".to_string());
@@ -372,6 +483,15 @@ impl Database {
         if let Some(archived) = updates.get("archived") {
             set_clauses.push("archived = ?".to_string());
             values.push(Box::new(if archived.as_bool().unwrap_or(false) {
+                1i64
+            } else {
+                0i64
+            }));
+        }
+
+        if let Some(plugin_linked) = updates.get("pluginLinked") {
+            set_clauses.push("plugin_linked = ?".to_string());
+            values.push(Box::new(if plugin_linked.as_bool().unwrap_or(false) {
                 1i64
             } else {
                 0i64
@@ -451,6 +571,9 @@ impl Database {
             time_spent: row.get("time_spent").ok(),
             genre: row.get("genre").ok(),
             artists: row.get("artists").ok(),
+            sort_order: row.get("sort_order").unwrap_or(0),
+            share_count: row.get("share_count").unwrap_or(0),
+            plugin_linked: row.get::<_, i64>("plugin_linked").unwrap_or(0) != 0,
         }
     }
 
@@ -730,6 +853,23 @@ impl Database {
         Ok(changes > 0)
     }
 
+    /// Batch-update sort_order for projects. Each entry should have "id" and "sortOrder".
+    pub fn reorder_projects(&self, projects: &[serde_json::Value]) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        for p in projects {
+            let id = p.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+            let order = p.get("sortOrder").and_then(|v| v.as_i64()).unwrap_or(0);
+            tx.execute(
+                "UPDATE projects SET sort_order = ? WHERE id = ?",
+                params![order, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
     pub fn reorder_tasks(&self, tasks: &[serde_json::Value]) -> Result<bool, String> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
@@ -874,6 +1014,14 @@ impl Database {
             .and_then(|v| v.as_str())
             .unwrap_or_default();
         let notes = version.get("notes").and_then(|v| v.as_str());
+        let source = version
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("manual");
+        let peak_db = version.get("peakDb").and_then(|v| v.as_f64());
+        let rms_db = version.get("rmsDb").and_then(|v| v.as_f64());
+        let lufs_integrated = version.get("lufsIntegrated").and_then(|v| v.as_f64());
+        let analysis_path = version.get("analysisPath").and_then(|v| v.as_str());
 
         let conn = self.conn.lock().unwrap();
         let max_version: i64 = conn
@@ -886,8 +1034,8 @@ impl Database {
         let version_number = max_version + 1;
 
         conn.execute(
-            "INSERT INTO audio_versions (id, project_id, name, file_path, notes, version_number, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, project_id, name, file_path, notes, version_number, now],
+            "INSERT INTO audio_versions (id, project_id, name, file_path, notes, source, version_number, created_at, peak_db, rms_db, lufs_integrated, analysis_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![id, project_id, name, file_path, notes, source, version_number, now, peak_db, rms_db, lufs_integrated, analysis_path],
         ).map_err(|e| e.to_string())?;
         drop(conn);
 
@@ -944,6 +1092,101 @@ impl Database {
         Ok(changes > 0)
     }
 
+    /// Update analysis fields on an audio version.
+    pub fn update_version_analysis(
+        &self,
+        id: &str,
+        peak_db: f64,
+        rms_db: f64,
+        lufs_integrated: f64,
+        analysis_path: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE audio_versions SET peak_db = ?1, rms_db = ?2, lufs_integrated = ?3, analysis_path = ?4 WHERE id = ?5",
+            params![peak_db, rms_db, lufs_integrated, analysis_path, id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Delete all audio versions for a specific project. Returns the deleted versions
+    /// so callers can clean up files on disk.
+    pub fn delete_versions_by_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<AudioVersion>, String> {
+        let versions = self.get_versions_by_project(project_id)?;
+        let conn = self.conn.lock().unwrap();
+        // Delete associated annotations first
+        conn.execute(
+            "DELETE FROM annotations WHERE version_id IN (SELECT id FROM audio_versions WHERE project_id = ?)",
+            params![project_id],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM audio_versions WHERE project_id = ?",
+            params![project_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(versions)
+    }
+
+    /// Delete all audio versions across all projects. Returns the deleted versions
+    /// so callers can clean up files on disk.
+    pub fn delete_all_versions(&self) -> Result<Vec<AudioVersion>, String> {
+        let conn = self.conn.lock().unwrap();
+        // Gather all versions first
+        let mut stmt = conn
+            .prepare("SELECT * FROM audio_versions")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok(Self::map_row_to_version(row)))
+            .map_err(|e| e.to_string())?;
+        let mut versions = Vec::new();
+        for row in rows {
+            if let Ok(v) = row {
+                versions.push(v);
+            }
+        }
+        drop(stmt);
+        // Delete all annotations then all versions
+        conn.execute("DELETE FROM annotations", [])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM audio_versions", [])
+            .map_err(|e| e.to_string())?;
+        Ok(versions)
+    }
+
+    /// Get a map of project_id -> list of distinct version sources for that project
+    pub fn get_project_version_sources(
+        &self,
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT project_id, source FROM audio_versions ORDER BY project_id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>("project_id").unwrap_or_default(),
+                    row.get::<_, String>("source")
+                        .unwrap_or_else(|_| "manual".to_string()),
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut map: std::collections::HashMap<String, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            if let Ok((pid, src)) = row {
+                map.entry(pid).or_default().insert(src);
+            }
+        }
+        Ok(map
+            .into_iter()
+            .map(|(k, v)| (k, v.into_iter().collect()))
+            .collect())
+    }
+
     fn map_row_to_version(row: &rusqlite::Row) -> AudioVersion {
         AudioVersion {
             id: row.get("id").unwrap_or_default(),
@@ -951,8 +1194,15 @@ impl Database {
             name: row.get("name").unwrap_or_default(),
             file_path: row.get("file_path").unwrap_or_default(),
             notes: row.get("notes").ok(),
+            source: row
+                .get::<_, String>("source")
+                .unwrap_or_else(|_| "manual".to_string()),
             version_number: row.get("version_number").unwrap_or(0),
             created_at: row.get("created_at").unwrap_or_default(),
+            peak_db: row.get("peak_db").ok(),
+            rms_db: row.get("rms_db").ok(),
+            lufs_integrated: row.get("lufs_integrated").ok(),
+            analysis_path: row.get("analysis_path").ok(),
         }
     }
 
@@ -1082,6 +1332,10 @@ impl Database {
                 .unwrap_or_else(|_| "#6366f1".to_string()),
             created_at: row.get("created_at").unwrap_or_default(),
             updated_at: row.get("updated_at").unwrap_or_default(),
+            is_task: row.get::<_, i64>("is_task").unwrap_or(0) != 0,
+            task_status: row.get("task_status").ok(),
+            task_priority: row.get("task_priority").ok(),
+            task_due_date: row.get("task_due_date").ok(),
         }
     }
 
@@ -1177,6 +1431,303 @@ impl Database {
             .map_err(|e| e.to_string())?;
         Ok(changes > 0)
     }
+
+    // ---- User Profile ----
+
+    pub fn get_user_profile(&self) -> Result<UserProfile, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT * FROM user_profile WHERE id = 'default'")
+            .map_err(|e| e.to_string())?;
+        let result = stmt
+            .query_row([], |row| {
+                Ok(UserProfile {
+                    id: row.get("id")?,
+                    display_name: row.get("display_name")?,
+                    avatar_path: row.get("avatar_path").ok(),
+                    bio: row.get("bio").ok(),
+                    created_at: row.get("created_at")?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(result)
+    }
+
+    pub fn update_user_profile(&self, data: &serde_json::Value) -> Result<UserProfile, String> {
+        let conn = self.conn.lock().unwrap();
+        if let Some(name) = data.get("displayName").and_then(|v| v.as_str()) {
+            conn.execute(
+                "UPDATE user_profile SET display_name = ? WHERE id = 'default'",
+                params![name],
+            ).map_err(|e| e.to_string())?;
+        }
+        if let Some(avatar) = data.get("avatarPath") {
+            let avatar_str = avatar.as_str();
+            conn.execute(
+                "UPDATE user_profile SET avatar_path = ? WHERE id = 'default'",
+                params![avatar_str],
+            ).map_err(|e| e.to_string())?;
+        }
+        if let Some(bio) = data.get("bio") {
+            let bio_str = bio.as_str();
+            conn.execute(
+                "UPDATE user_profile SET bio = ? WHERE id = 'default'",
+                params![bio_str],
+            ).map_err(|e| e.to_string())?;
+        }
+        drop(conn);
+        self.get_user_profile()
+    }
+
+    // ---- Collaboration / Shares ----
+
+    pub fn create_share(&self, project_id: &str, permissions: &str, message: Option<&str>, created_by: Option<&str>) -> Result<ProjectShare, String> {
+        let conn = self.conn.lock().unwrap();
+        let id = Uuid::new_v4().to_string();
+        let token = format!("dbundone_{}", Uuid::new_v4().to_string().replace('-', ""));
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO project_shares (id, project_id, share_token, permissions, message, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, project_id, token, permissions, message, created_by, now],
+        ).map_err(|e| e.to_string())?;
+        Ok(ProjectShare {
+            id,
+            project_id: project_id.to_string(),
+            share_token: token,
+            shared_with: None,
+            permissions: permissions.to_string(),
+            message: message.map(|s| s.to_string()),
+            created_by: created_by.map(|s| s.to_string()),
+            created_at: now,
+            expires_at: None,
+        })
+    }
+
+    pub fn get_shares_by_project(&self, project_id: &str) -> Result<Vec<ProjectShare>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT * FROM project_shares WHERE project_id = ? ORDER BY created_at DESC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                Ok(ProjectShare {
+                    id: row.get("id")?,
+                    project_id: row.get("project_id")?,
+                    share_token: row.get("share_token")?,
+                    shared_with: row.get("shared_with").ok(),
+                    permissions: row.get::<_, String>("permissions").unwrap_or_else(|_| "view".to_string()),
+                    message: row.get("message").ok(),
+                    created_by: row.get("created_by").ok(),
+                    created_at: row.get("created_at")?,
+                    expires_at: row.get("expires_at").ok(),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut shares = Vec::new();
+        for row in rows {
+            match row {
+                Ok(s) => shares.push(s),
+                Err(e) => log::error!("Error mapping share row: {}", e),
+            }
+        }
+        Ok(shares)
+    }
+
+    pub fn delete_share(&self, id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        let changes = conn
+            .execute("DELETE FROM project_shares WHERE id = ?", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(changes > 0)
+    }
+
+    // ---- FLP Analysis Cache ----
+
+    pub fn get_flp_analysis_cache(&self, project_id: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT analysis_json FROM flp_analysis_cache WHERE project_id = ?")
+            .map_err(|e| e.to_string())?;
+        let result = stmt
+            .query_row(params![project_id], |row| row.get::<_, String>(0))
+            .ok();
+        Ok(result)
+    }
+
+    pub fn save_flp_analysis_cache(&self, project_id: &str, analysis_json: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR REPLACE INTO flp_analysis_cache (project_id, analysis_json, analyzed_at) VALUES (?1, ?2, ?3)",
+            params![project_id, analysis_json, now],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ---- Onboarding ----
+
+    pub fn get_onboarding_state(&self) -> Result<OnboardingState, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT * FROM onboarding_state WHERE id = 'default'")
+            .map_err(|e| e.to_string())?;
+        let result = stmt
+            .query_row([], |row| {
+                let steps_json: String = row.get::<_, String>("completed_steps").unwrap_or_else(|_| "[]".to_string());
+                let steps: Vec<String> = serde_json::from_str(&steps_json).unwrap_or_default();
+                Ok(OnboardingState {
+                    completed_steps: steps,
+                    dismissed: row.get::<_, i64>("dismissed").unwrap_or(0) != 0,
+                    current_step: row.get::<_, i64>("current_step").unwrap_or(0) as usize,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(result)
+    }
+
+    pub fn update_onboarding_state(&self, state: &serde_json::Value) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        if let Some(steps) = state.get("completedSteps") {
+            let json = serde_json::to_string(steps).unwrap_or_else(|_| "[]".to_string());
+            conn.execute(
+                "UPDATE onboarding_state SET completed_steps = ? WHERE id = 'default'",
+                params![json],
+            ).map_err(|e| e.to_string())?;
+        }
+        if let Some(dismissed) = state.get("dismissed").and_then(|v| v.as_bool()) {
+            conn.execute(
+                "UPDATE onboarding_state SET dismissed = ? WHERE id = 'default'",
+                params![dismissed as i64],
+            ).map_err(|e| e.to_string())?;
+        }
+        if let Some(step) = state.get("currentStep").and_then(|v| v.as_u64()) {
+            conn.execute(
+                "UPDATE onboarding_state SET current_step = ? WHERE id = 'default'",
+                params![step as i64],
+            ).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    // ---- Annotation Task Extension ----
+
+    pub fn convert_annotation_to_task(&self, annotation_id: &str) -> Result<Annotation, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE annotations SET is_task = 1, task_status = 'todo' WHERE id = ?",
+            params![annotation_id],
+        ).map_err(|e| e.to_string())?;
+        drop(conn);
+        // Return updated annotation
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT * FROM annotations WHERE id = ?")
+            .map_err(|e| e.to_string())?;
+        stmt.query_row(params![annotation_id], |row| Ok(Self::map_row_to_annotation(row)))
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn unconvert_annotation_from_task(&self, annotation_id: &str) -> Result<Annotation, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE annotations SET is_task = 0, task_status = NULL, task_priority = NULL, task_due_date = NULL WHERE id = ?",
+            params![annotation_id],
+        ).map_err(|e| e.to_string())?;
+        drop(conn);
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT * FROM annotations WHERE id = ?")
+            .map_err(|e| e.to_string())?;
+        stmt.query_row(params![annotation_id], |row| Ok(Self::map_row_to_annotation(row)))
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn update_annotation_task(&self, annotation_id: &str, data: &serde_json::Value) -> Result<Annotation, String> {
+        let conn = self.conn.lock().unwrap();
+        if let Some(status) = data.get("taskStatus").and_then(|v| v.as_str()) {
+            conn.execute(
+                "UPDATE annotations SET task_status = ? WHERE id = ?",
+                params![status, annotation_id],
+            ).map_err(|e| e.to_string())?;
+        }
+        if let Some(priority) = data.get("taskPriority").and_then(|v| v.as_str()) {
+            conn.execute(
+                "UPDATE annotations SET task_priority = ? WHERE id = ?",
+                params![priority, annotation_id],
+            ).map_err(|e| e.to_string())?;
+        }
+        if let Some(due_date) = data.get("taskDueDate") {
+            let dd = due_date.as_str();
+            conn.execute(
+                "UPDATE annotations SET task_due_date = ? WHERE id = ?",
+                params![dd, annotation_id],
+            ).map_err(|e| e.to_string())?;
+        }
+        drop(conn);
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT * FROM annotations WHERE id = ?")
+            .map_err(|e| e.to_string())?;
+        stmt.query_row(params![annotation_id], |row| Ok(Self::map_row_to_annotation(row)))
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn get_task_annotations_by_project(&self, project_id: &str) -> Result<Vec<Annotation>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.* FROM annotations a 
+                 JOIN audio_versions v ON a.version_id = v.id 
+                 WHERE v.project_id = ? AND a.is_task = 1 
+                 ORDER BY a.timestamp ASC"
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![project_id], |row| Ok(Self::map_row_to_annotation(row)))
+            .map_err(|e| e.to_string())?;
+        let mut annotations = Vec::new();
+        for row in rows {
+            match row {
+                Ok(a) => annotations.push(a),
+                Err(e) => log::error!("Error mapping task annotation: {}", e),
+            }
+        }
+        Ok(annotations)
+    }
+}
+
+// ── New struct definitions ─────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserProfile {
+    pub id: String,
+    pub display_name: String,
+    pub avatar_path: Option<String>,
+    pub bio: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectShare {
+    pub id: String,
+    pub project_id: String,
+    pub share_token: String,
+    pub shared_with: Option<String>,
+    pub permissions: String,
+    pub message: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OnboardingState {
+    pub completed_steps: Vec<String>,
+    pub dismissed: bool,
+    pub current_step: usize,
 }
 
 #[cfg(test)]

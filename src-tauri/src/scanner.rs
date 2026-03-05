@@ -203,17 +203,61 @@ pub fn extract_zip_flp_metadata(entry: &ZipFlpEntry) -> Option<Value> {
 }
 
 pub fn scan_for_als_files(folder_path: &str) -> Vec<String> {
-    let mut als_files = Vec::new();
+    scan_for_project_files(folder_path, &["als"], None)
+}
 
-    fn scan_recursive(dir: &Path, results: &mut Vec<String>) {
+/// Generic project file scanner that works for any DAW file extension(s).
+/// Supports both regular files and macOS package directories (.logicx, .band).
+/// `extensions` should be lowercase without dots, e.g. &["flp"], &["mmp", "mmpz"].
+/// `max_depth` limits recursion; None means unlimited.
+pub fn scan_for_project_files(
+    folder_path: &str,
+    extensions: &[&str],
+    max_depth: Option<usize>,
+) -> Vec<String> {
+    // Extensions that are actually macOS package directories (folders with an extension)
+    let package_extensions: Vec<&str> = extensions
+        .iter()
+        .copied()
+        .filter(|e| matches!(*e, "logicx" | "band"))
+        .collect();
+    let file_extensions: Vec<&str> = extensions
+        .iter()
+        .copied()
+        .filter(|e| !matches!(*e, "logicx" | "band"))
+        .collect();
+
+    let mut results = Vec::new();
+
+    fn scan_recursive(
+        dir: &Path,
+        file_exts: &[&str],
+        pkg_exts: &[&str],
+        results: &mut Vec<String>,
+        depth: usize,
+        max_depth: Option<usize>,
+    ) {
+        if let Some(md) = max_depth {
+            if depth > md {
+                return;
+            }
+        }
+
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    scan_recursive(&path, results);
+                    // Check if this directory IS a package project (e.g. .logicx, .band)
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        if pkg_exts.iter().any(|pe| ext.eq_ignore_ascii_case(pe)) {
+                            results.push(path.to_string_lossy().to_string());
+                            continue; // Don't recurse into package directories
+                        }
+                    }
+                    scan_recursive(&path, file_exts, pkg_exts, results, depth + 1, max_depth);
                 } else if path.is_file() {
                     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                        if ext.eq_ignore_ascii_case("als") {
+                        if file_exts.iter().any(|fe| ext.eq_ignore_ascii_case(fe)) {
                             results.push(path.to_string_lossy().to_string());
                         }
                     }
@@ -222,8 +266,15 @@ pub fn scan_for_als_files(folder_path: &str) -> Vec<String> {
         }
     }
 
-    scan_recursive(Path::new(folder_path), &mut als_files);
-    als_files
+    scan_recursive(
+        Path::new(folder_path),
+        &file_extensions,
+        &package_extensions,
+        &mut results,
+        0,
+        max_depth,
+    );
+    results
 }
 
 pub fn filter_autosaves(files: &[String], extension: &str) -> Vec<String> {

@@ -36,6 +36,8 @@ dirs = "5"
 symphonia = { version = "0.5", features = ["all"] }
 open = "5"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

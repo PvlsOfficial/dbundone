@@ -1,4 +1,5 @@
 import type { AppSettings } from "@shared/types"
+import { SUPPORTED_DAWS } from "@shared/types"
 
 export const DEFAULT_SETTINGS: AppSettings = {
   flStudioPath: null,
@@ -14,4 +15,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   viewMode: "grid",
   gridSize: "medium",
   unsplashEnabled: true,
+  sampleFolders: [],
+  autoScanOnStartup: true,
+  defaultSort: "date-newest",
+  notificationsEnabled: true,
+  notifyOnShare: true,
+  notifyOnAnnotation: true,
+  notifyOnStatusChange: true,
+  confirmDestructiveActions: true,
+  language: "en",
 }

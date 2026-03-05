@@ -70,9 +70,24 @@ Desktop.ini
 # Python (no longer used)
 .venv/
 assets/python/
-*.py
 __pycache__/
 *.pyc
 
 # Tauri build artifacts
 src-tauri/target/
+
+# VST plugin build artifacts
+dbundone-vst/target/
+
+# Test / dev-only assets (FLP sample files)
+assets/flps/
+
+# Windows device-name artifacts
+nul
+
+# Test files that shouldn't ship
+test_analyze.rs
+
+# Cargo lock files are generated — keep src-tauri/Cargo.lock for reproducible builds
+# but ignore the VST workspace lock (it's in its own workspace)
+dbundone-vst/Cargo.lock

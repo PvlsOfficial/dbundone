@@ -193,6 +193,7 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({ project, isOpen, onC
         timeSpent: project?.timeSpent || null,
         genre: genre?.trim() || null,
         artists: artists?.trim() || null,
+        sortOrder: project?.sortOrder || 0,
       }
 
       if (project) {

@@ -56,6 +56,7 @@ import {
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import { useImageUrl } from '@/hooks/useImageUrl';
+import { useI18n } from '@/i18n';
 
 function ArtworkImage({ filePath, alt, className }: { filePath: string | null | undefined, alt: string, className?: string }) {
   const url = useImageUrl(filePath)
@@ -81,6 +82,7 @@ interface GroupsProps {
 }
 
 export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRefresh, onOpenGroup, onUpdateGroup, onDeleteGroup, onSettingsChange }) => {
+  const { t } = useI18n();
   const [selectedGroup, setSelectedGroup] = useState<ProjectGroup | null>(null);
   
   const [isCreating, setIsCreating] = useState(false);
@@ -239,15 +241,15 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
             <div className="p-2 rounded-xl bg-primary/10">
               <FolderOpen className="w-6 h-6 text-primary" />
             </div>
-            <h1 className="text-2xl font-bold text-foreground">Project Groups</h1>
+            <h1 className="text-2xl font-bold text-foreground">{t('groups.title')}</h1>
             <Badge variant="secondary" className="text-sm">
-              {filteredAndSortedGroups.length} {filteredAndSortedGroups.length === 1 ? 'group' : 'groups'}
+              {t('groups.count', { count: String(filteredAndSortedGroups.length) })}
             </Badge>
           </div>
           <div className="flex items-center gap-2">
-            <Button onClick={handleCreateGroup} className="gap-2">
+            <Button onClick={handleCreateGroup} className="gap-2" data-tour-new-collection>
               <Plus className="w-4 h-4" />
-              New Group
+              {t('groups.newGroup')}
             </Button>
           </div>
         </div>
@@ -257,7 +259,7 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
           <div className="relative flex-1 max-w-md">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
             <Input
-              placeholder="Search groups..."
+              placeholder={t('groups.searchGroups')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 bg-muted/30"
@@ -269,9 +271,9 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="name">Name</SelectItem>
-              <SelectItem value="date">Date Created</SelectItem>
-              <SelectItem value="projects">Project Count</SelectItem>
+              <SelectItem value="name">{t('groups.sortName')}</SelectItem>
+              <SelectItem value="date">{t('groups.sortDate')}</SelectItem>
+              <SelectItem value="projects">{t('groups.sortCount')}</SelectItem>
             </SelectContent>
           </Select>
 
@@ -353,7 +355,7 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                           {/* Project count badge */}
                           <div className="absolute top-3 right-3">
                             <Badge variant="secondary" className="backdrop-blur-sm bg-background/60">
-                              {groupProjects.length} {groupProjects.length === 1 ? 'project' : 'projects'}
+                              {t('groups.count', { count: String(groupProjects.length) })}
                             </Badge>
                           </div>
                           
@@ -393,10 +395,10 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                             )}
                             <div className="flex items-center gap-2 mt-2">
                               <Badge variant="secondary" className="text-xs">
-                                {groupProjects.length} {groupProjects.length === 1 ? 'project' : 'projects'}
+                                {t('groups.count', { count: String(groupProjects.length) })}
                               </Badge>
                               <span className="text-xs text-muted-foreground">
-                                Created {new Date(group.createdAt).toLocaleDateString()}
+                                {t('groups.created', { date: new Date(group.createdAt).toLocaleDateString() })}
                               </span>
                             </div>
                           </div>
@@ -421,11 +423,11 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                 <ContextMenuContent className="w-56">
                     <ContextMenuItem onClick={() => onOpenGroup?.(group) || handleEditGroup(group)}>
                       <Eye className="w-4 h-4 mr-2" />
-                      Open Group
+                      {t('groups.openCollection')}
                     </ContextMenuItem>
                     <ContextMenuItem onClick={() => handleEditGroup(group)}>
                       <Edit className="w-4 h-4 mr-2" />
-                      Edit Details
+                      {t('groups.editGroup')}
                     </ContextMenuItem>
                     <ContextMenuSeparator />
                     <ContextMenuItem onClick={() => {
@@ -435,7 +437,7 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                       setIsCreating(true);
                     }}>
                       <FolderPlus className="w-4 h-4 mr-2" />
-                      Manage Projects
+                      {t('groups.selectProjects')}
                     </ContextMenuItem>
                     <ContextMenuItem onClick={async () => {
                       const path = await window.electron?.selectImage();
@@ -444,7 +446,7 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                       }
                     }}>
                       <ImageIcon className="w-4 h-4 mr-2" />
-                      Change Artwork
+                      {t('groups.changeArtwork')}
                     </ContextMenuItem>
                     {group.artworkPath && (
                       <ContextMenuItem onClick={() => {
@@ -453,7 +455,7 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                         }
                       }}>
                         <X className="w-4 h-4 mr-2" />
-                        Remove Artwork
+                        {t('groups.removeArtwork')}
                       </ContextMenuItem>
                     )}
                     <ContextMenuSeparator />
@@ -461,7 +463,7 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                       navigator.clipboard.writeText(group.name);
                     }}>
                       <Copy className="w-4 h-4 mr-2" />
-                      Copy Name
+                      {t('groups.copyName')}
                     </ContextMenuItem>
                     <ContextMenuSeparator />
                     <ContextMenuItem 
@@ -469,7 +471,7 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                       className="text-destructive focus:text-destructive"
                     >
                       <Trash2 className="w-4 h-4 mr-2" />
-                      Delete Group
+                      {t('groups.deleteGroup')}
                     </ContextMenuItem>
                   </ContextMenuContent>
                 </ContextMenu>
@@ -486,13 +488,13 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
           <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center mb-6">
             <FolderOpen className="w-10 h-10 text-muted-foreground" />
           </div>
-          <h2 className="text-2xl font-semibold mb-2">No groups yet</h2>
+          <h2 className="text-2xl font-semibold mb-2">{t('groups.noGroups')}</h2>
           <p className="text-muted-foreground mb-6 max-w-sm">
-            Create groups to organize your projects by album, genre, or any way you like
+            {t('groups.noGroupsHint')}
           </p>
           <Button onClick={handleCreateGroup} className="gap-2">
             <Plus className="w-4 h-4" />
-            Create Your First Group
+            {t('groups.newGroup')}
           </Button>
         </motion.div>
       )}
@@ -504,7 +506,7 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
           isSelectingProjects ? "sm:max-w-4xl" : "sm:max-w-lg"
         )}>
           <DialogHeader>
-            <DialogTitle>{isSelectingProjects ? 'Select Projects' : (selectedGroup ? 'Edit Group' : 'New Group')}</DialogTitle>
+            <DialogTitle>{isSelectingProjects ? t('groups.selectProjects') : (selectedGroup ? t('groups.editGroup') : t('groups.newGroup'))}</DialogTitle>
           </DialogHeader>
 
           <AnimatePresence mode="wait">
@@ -532,27 +534,27 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                     ) : (
                       <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-muted-foreground group-hover:text-primary transition-colors">
                         <Image className="w-8 h-8" />
-                        <span className="text-xs">Add artwork</span>
+                        <span className="text-xs">{t('groups.addArtwork')}</span>
                       </div>
                     )}
                   </button>
 
                   <div className="flex-1 space-y-4">
                     <div className="space-y-2">
-                      <label className="text-sm font-medium">Name</label>
+                      <label className="text-sm font-medium">{t('form.name')}</label>
                       <Input
                         value={formData.name}
                         onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                        placeholder="Group name"
+                        placeholder={t('form.placeholder.groupName')}
                         autoFocus
                       />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-sm font-medium">Description</label>
+                      <label className="text-sm font-medium">{t('form.description')}</label>
                       <Textarea
                         value={formData.description}
                         onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                        placeholder="Add a description..."
+                        placeholder={t('form.placeholder.groupDesc')}
                         rows={2}
                       />
                     </div>
@@ -564,14 +566,14 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                   <>
                     <div className="flex items-center justify-between">
                       <label className="text-sm font-medium">
-                        Projects ({selectedProjectIds.size} selected)
+                        {t('groups.projectsSelected', { count: String(selectedProjectIds.size) })}
                       </label>
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => setIsSelectingProjects(true)}
                       >
-                        Select Projects
+                        {t('groups.selectProjects')}
                       </Button>
                     </div>
 
@@ -621,14 +623,14 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                       className="mr-auto"
                     >
                       <Trash2 className="w-4 h-4 mr-2" />
-                      Delete
+                      {t('common.delete')}
                     </Button>
                   )}
                   <Button variant="outline" onClick={handleCancelEdit} className="ml-auto">
-                    Cancel
+                    {t('common.cancel')}
                   </Button>
                   <Button onClick={handleSaveGroup} disabled={!formData.name.trim()}>
-                    Save
+                    {t('common.save')}
                   </Button>
                 </div>
               </motion.div>
@@ -820,9 +822,9 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                         <div className="w-16 h-16 rounded-full bg-muted/50 flex items-center justify-center mb-4">
                           <Search className="w-8 h-8 text-muted-foreground" />
                         </div>
-                        <h3 className="font-medium text-foreground mb-1">No results found</h3>
+                        <h3 className="font-medium text-foreground mb-1">{t('groups.noResults')}</h3>
                         <p className="text-sm text-muted-foreground">
-                          Try adjusting your search
+                          {t('groups.noResultsHint')}
                         </p>
                       </div>
                     );
@@ -841,7 +843,7 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                     }
                     handleCancelEdit();
                   }}>
-                    Save & Close
+                    {t('groups.saveClose')}
                   </Button>
                 </div>
               </motion.div>

@@ -86,6 +86,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { cn, formatTimeSpent } from '@/lib/utils';
 import { useImageUrl } from '@/hooks/useImageUrl';
+import { useI18n } from '@/i18n';
 
 function ArtworkImage({ filePath, alt, className, isVisible = true }: { filePath: string | null | undefined, alt: string, className?: string, isVisible?: boolean }) {
   // Only trigger Tauri IPC image load when the card is visible
@@ -173,6 +174,8 @@ const VirtualizedColumn = memo(({
   sharedRef,
   itemHeight,
   overscan,
+  isCustomSort,
+  onReorder,
 }: {
   projects: Project[];
   selectedProjects: Set<string>;
@@ -180,10 +183,14 @@ const VirtualizedColumn = memo(({
   sharedRef: React.RefObject<BoardSharedState>;
   itemHeight: number;
   overscan: number;
+  isCustomSort: boolean;
+  onReorder?: (projectId: string, targetIndex: number) => void;
 }) => {
+  const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(0);
+  const [dropIndicatorIndex, setDropIndicatorIndex] = useState<number | null>(null);
 
   // Measure container height once and on resize
   useEffect(() => {
@@ -199,6 +206,51 @@ const VirtualizedColumn = memo(({
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     setScrollTop(e.currentTarget.scrollTop);
   }, []);
+
+  // Compute drop index from mouse Y position relative to the column scroll area
+  const getDropIndex = useCallback((e: React.DragEvent) => {
+    const el = scrollRef.current;
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    const y = e.clientY - rect.top + el.scrollTop;
+    return Math.min(projects.length, Math.max(0, Math.round(y / itemHeight)));
+  }, [projects.length, itemHeight]);
+
+  const handleColumnDragOver = useCallback((e: React.DragEvent) => {
+    if (!isCustomSort) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDropIndicatorIndex(getDropIndex(e));
+  }, [isCustomSort, getDropIndex]);
+
+  const handleColumnDragLeave = useCallback((e: React.DragEvent) => {
+    const currentTarget = e.currentTarget as HTMLElement;
+    const relatedTarget = e.relatedTarget as HTMLElement | null;
+    if (!relatedTarget || !currentTarget.contains(relatedTarget)) {
+      setDropIndicatorIndex(null);
+    }
+  }, []);
+
+  const handleColumnDrop = useCallback((e: React.DragEvent) => {
+    if (!isCustomSort || !onReorder) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const targetIndex = getDropIndex(e);
+    setDropIndicatorIndex(null);
+
+    // Read dragged project ID(s) from dataTransfer
+    try {
+      const data = e.dataTransfer.getData('text/plain');
+      if (data) {
+        const ids = JSON.parse(data) as string[];
+        if (ids.length > 0) {
+          onReorder(ids[0], targetIndex);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, [isCustomSort, onReorder, getDropIndex]);
 
   const totalHeight = projects.length * itemHeight;
   const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
@@ -216,24 +268,37 @@ const VirtualizedColumn = memo(({
       ref={scrollRef}
       className="flex-1 overflow-y-auto overflow-x-hidden p-2"
       onScroll={handleScroll}
+      onDragOver={handleColumnDragOver}
+      onDragLeave={handleColumnDragLeave}
+      onDrop={handleColumnDrop}
     >
       {projects.length === 0 ? (
         <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
-          Drag projects here
+          {t('scheduler.dragHere')}
         </div>
       ) : (
         <>
           {topPad > 0 && <div style={{ height: topPad }} aria-hidden />}
           <div className="space-y-2">
-            {visibleProjects.map((project) => (
-              <BoardCard
-                key={project.id}
-                project={project}
-                isSelected={selectedProjects.has(project.id)}
-                observer={observer}
-                sharedRef={sharedRef}
-              />
-            ))}
+            {visibleProjects.map((project, i) => {
+              const absoluteIndex = startIndex + i;
+              return (
+                <React.Fragment key={project.id}>
+                  {isCustomSort && dropIndicatorIndex === absoluteIndex && (
+                    <div className="h-0.5 bg-primary rounded-full mx-1 -my-1 transition-all" />
+                  )}
+                  <BoardCard
+                    project={project}
+                    isSelected={selectedProjects.has(project.id)}
+                    observer={observer}
+                    sharedRef={sharedRef}
+                  />
+                </React.Fragment>
+              );
+            })}
+            {isCustomSort && dropIndicatorIndex !== null && dropIndicatorIndex >= endIndex && (
+              <div className="h-0.5 bg-primary rounded-full mx-1 transition-all" />
+            )}
           </div>
           {bottomPad > 0 && <div style={{ height: bottomPad }} aria-hidden />}
         </>
@@ -395,6 +460,20 @@ const BoardCard = memo(({ project, isSelected, observer, sharedRef }: BoardCardP
 });
 
 export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, settings, tags, onCreateTag, onOpenProject }) => {
+  const { t } = useI18n();
+  const statusLabel = (id: ProjectStatus): string => {
+    const map: Record<ProjectStatus, string> = {
+      'idea': t('status.idea'),
+      'in-progress': t('status.inProgress'),
+      'mixing': t('status.mixing'),
+      'mastering': t('status.mastering'),
+      'completed': t('status.completed'),
+      'released': t('status.released'),
+      'archived': t('status.archived'),
+    };
+    return map[id] || id;
+  };
+
   // Memoized unique values from projects
   const allProjectTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -466,7 +545,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
   const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
   const [bulkEditMode, setBulkEditMode] = useState(false);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
-  const [projectSortBy, setProjectSortBy] = useState<'title' | 'created' | 'updated' | 'bpm' | 'status' | 'time-spent'>('created');
+  const [projectSortBy, setProjectSortBy] = useState<'title' | 'created' | 'updated' | 'bpm' | 'status' | 'time-spent' | 'custom'>('created');
   const [projectSortOrder, setProjectSortOrder] = useState<'asc' | 'desc'>('desc');
   const [showArchivedProjects, setShowArchivedProjects] = useState(false);
   const [activeTimer, setActiveTimer] = useState<string | null>(null);
@@ -571,6 +650,10 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
       let aValue: any, bValue: any;
 
       switch (projectSortBy) {
+        case 'custom':
+          aValue = a.sortOrder || 0;
+          bValue = b.sortOrder || 0;
+          break;
         case 'title':
           aValue = a.title.toLowerCase();
           bValue = b.title.toLowerCase();
@@ -600,6 +683,10 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
           return 0;
       }
 
+      // Custom sort is always ascending (lower sortOrder = higher in list)
+      if (projectSortBy === 'custom') {
+        return aValue - bValue;
+      }
       if (aValue < bValue) return projectSortOrder === 'asc' ? -1 : 1;
       if (aValue > bValue) return projectSortOrder === 'asc' ? 1 : -1;
       return 0;
@@ -661,6 +748,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
         favoriteVersionId: editingProject?.favoriteVersionId || null,
         fileModifiedAt: editingProject?.fileModifiedAt || null,
         archived: false,
+        sortOrder: editingProject?.sortOrder || 0,
         createdAt: editingProject?.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -767,7 +855,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
     if (dragCount > 1) {
       const dragPreview = document.createElement('div');
       dragPreview.className = 'fixed pointer-events-none z-[9999] px-3 py-2 bg-primary text-primary-foreground rounded-lg shadow-lg font-medium text-sm flex items-center gap-2';
-      dragPreview.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg> Moving ${dragCount} projects`;
+      dragPreview.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg> ${t('scheduler.movingProjects', { count: String(dragCount) })}`;
       dragPreview.style.transform = 'translate(-50%, -50%)';
       document.body.appendChild(dragPreview);
       e.dataTransfer.setDragImage(dragPreview, 75, 20);
@@ -845,6 +933,8 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
     setDragOverColumn(null);
     setIsDragging(false);
 
+    // In custom sort mode, drops within columns are handled by VirtualizedColumn's onReorder.
+    // Column-level drops (changing status) still work here but append to the end.
     let projectsToMove = draggedProjectIds.size > 0 ? draggedProjectIds : selectedProjects;
     
     // Fallback: read from dataTransfer if state is empty
@@ -863,8 +953,15 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
     if (projectsToMove.size === 0) return;
 
     try {
-      await Promise.all(Array.from(projectsToMove).map(id =>
-        window.electron?.updateProject(id, { status: targetStatus })
+      // If custom sort, give moved projects a sortOrder at the end of the target column
+      const targetColumnLen = projectsByStatus[targetStatus]?.length || 0;
+      let orderOffset = targetColumnLen;
+
+      await Promise.all(Array.from(projectsToMove).map((id, i) =>
+        window.electron?.updateProject(id, {
+          status: targetStatus,
+          ...(projectSortBy === 'custom' ? { sortOrder: orderOffset + i } : {}),
+        })
       ));
       await onRefresh();
       setSelectedProjects(new Set());
@@ -877,6 +974,40 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
   const clearProjectSelection = () => {
     setSelectedProjects(new Set());
   };
+
+  // Reorder a project within a column (custom sort mode)
+  const handleReorderInColumn = useCallback(async (columnId: ProjectStatus, projectId: string, targetIndex: number) => {
+    const columnProjects = [...projectsByStatus[columnId]];
+    const currentIndex = columnProjects.findIndex(p => p.id === projectId);
+    
+    // If the project isn't in this column yet, it's being moved from another column
+    if (currentIndex === -1) {
+      // Move to this column + set status
+      await window.electron?.updateProject(projectId, { status: columnId });
+      // Insert at the target position
+      columnProjects.splice(targetIndex, 0, projects.find(p => p.id === projectId)!);
+    } else {
+      // Same column reorder: remove from old position, insert at new
+      const [moved] = columnProjects.splice(currentIndex, 1);
+      const adjustedTarget = targetIndex > currentIndex ? targetIndex - 1 : targetIndex;
+      columnProjects.splice(adjustedTarget, 0, moved);
+    }
+
+    // Assign new sort_order values for all projects in this column
+    const reorderData = columnProjects.map((p, i) => ({
+      id: p.id,
+      sortOrder: i,
+    }));
+
+    try {
+      await window.electron?.reorderProjects(reorderData);
+      await onRefresh();
+    } catch (error) {
+      console.error('Failed to reorder projects:', error);
+    }
+    setDraggedProjectIds(new Set());
+    setIsDragging(false);
+  }, [projectsByStatus, projects, onRefresh]);
 
   const bulkUpdateProjects = async (updates: Partial<Project>) => {
     try {
@@ -908,7 +1039,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                 <div className="p-2 rounded-xl bg-primary/10">
                   <Layers className="w-6 h-6 text-primary" />
                 </div>
-                <h1 className="text-2xl font-bold text-foreground">Project Board</h1>
+                <h1 className="text-2xl font-bold text-foreground">{t('scheduler.title')}</h1>
               </div>
               <div className="flex items-center gap-2">
                 <Button
@@ -918,14 +1049,14 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                   className="gap-2"
                 >
                   <Archive className="w-4 h-4" />
-                  {showArchivedProjects ? "Hide Archived" : "Show Archived"}
+                  {showArchivedProjects ? t('scheduler.hideArchived') : t('scheduler.showArchived')}
                 </Button>
                 <Button
                   onClick={handleCreateProject}
                   className="gap-2"
                 >
                   <Plus className="w-4 h-4" />
-                  New Project
+                  {t('scheduler.newProject')}
                 </Button>
               </div>
             </div>
@@ -955,17 +1086,23 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
               </div>
 
               <Select
-                value={`${projectSortBy}-${projectSortOrder}`}
+                value={projectSortBy === 'custom' ? 'custom-asc' : `${projectSortBy}-${projectSortOrder}`}
                 onValueChange={(value) => {
-                  const [sortBy, sortOrder] = value.split('-') as [typeof projectSortBy, typeof projectSortOrder];
-                  setProjectSortBy(sortBy);
-                  setProjectSortOrder(sortOrder);
+                  if (value === 'custom-asc') {
+                    setProjectSortBy('custom');
+                    setProjectSortOrder('asc');
+                  } else {
+                    const [sortBy, sortOrder] = value.split('-') as [typeof projectSortBy, typeof projectSortOrder];
+                    setProjectSortBy(sortBy);
+                    setProjectSortOrder(sortOrder);
+                  }
                 }}
               >
                 <SelectTrigger className="w-44 bg-muted/30">
                   <SelectValue placeholder="Sort by" />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="custom-asc">Custom Order</SelectItem>
                   <SelectItem value="created-desc">Newest First</SelectItem>
                   <SelectItem value="created-asc">Oldest First</SelectItem>
                   <SelectItem value="title-asc">Name A-Z</SelectItem>
@@ -999,7 +1136,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                     className="gap-2"
                   >
                     <Edit3 className="w-4 h-4" />
-                    Bulk Edit
+                    {t('scheduler.bulkEdit')}
                   </Button>
                   <Button
                     variant="ghost"
@@ -1021,7 +1158,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                   className="gap-2"
                 >
                   <X className="w-4 h-4" />
-                  Exit Select
+                  {t('scheduler.exitSelect')}
                 </Button>
               )}
               {!bulkEditMode && (
@@ -1069,7 +1206,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                             )}
                           >
                             <span className={projectStatusFilter.includes(column.id) ? "" : column.color}>{column.icon}</span>
-                            {column.title}
+                            {statusLabel(column.id)}
                           </button>
                         ))}
                       </div>
@@ -1078,7 +1215,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                     {/* Tags Filter */}
                     {allProjectTags.length > 0 && (
                       <div className="space-y-2">
-                        <label className="text-sm font-medium text-foreground">Tags</label>
+                        <label className="text-sm font-medium text-foreground">{t('form.tags')}</label>
                         <div className="flex flex-wrap gap-2">
                           {allProjectTags.map((tag) => (
                             <button
@@ -1136,7 +1273,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                     {/* Genre Filter */}
                     {allProjectGenres.length > 0 && (
                       <div className="space-y-2">
-                        <label className="text-sm font-medium text-foreground">Genre</label>
+                        <label className="text-sm font-medium text-foreground">{t('form.genre')}</label>
                         <div className="flex flex-wrap gap-2">
                           {allProjectGenres.map((genre) => (
                             <button
@@ -1165,7 +1302,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                     {/* Artist Filter */}
                     {allProjectArtists.length > 0 && (
                       <div className="space-y-2">
-                        <label className="text-sm font-medium text-foreground">Artist</label>
+                        <label className="text-sm font-medium text-foreground">{t('form.artists')}</label>
                         <div className="flex flex-wrap gap-2">
                           {allProjectArtists.map((artist) => (
                             <button
@@ -1223,7 +1360,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
             >
               <div className="flex items-center gap-3">
                 <span className="text-sm font-medium">
-                  {selectedProjects.size} project{selectedProjects.size !== 1 ? 's' : ''} selected - Click items to select/deselect
+                  {t('scheduler.selectedBulk', { count: String(selectedProjects.size) })}
                 </span>
                 <Button
                   size="sm"
@@ -1246,7 +1383,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                   <DropdownMenuTrigger asChild>
                     <Button size="sm" variant="outline" className="gap-2">
                       <ArrowRight className="w-4 h-4" />
-                      Move to
+                      {t('scheduler.moveTo')}
                       <ChevronDown className="w-4 h-4 opacity-50" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -1258,7 +1395,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                         className="gap-2"
                       >
                         <span className={column.color}>{column.icon}</span>
-                        {column.title}
+                        {statusLabel(column.id)}
                       </DropdownMenuItem>
                     ))}
                   </DropdownMenuContent>
@@ -1270,7 +1407,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                   className="gap-2"
                 >
                   <Archive className="w-4 h-4" />
-                  Archive
+                  {t('scheduler.archive')}
                 </Button>
                 <Button
                   size="sm"
@@ -1288,14 +1425,14 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                   className="gap-2"
                 >
                   <Trash2 className="w-4 h-4" />
-                  Delete
+                  {t('common.delete')}
                 </Button>
                 <Button
                   size="sm"
                   variant="ghost"
                   onClick={() => setBulkEditMode(false)}
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </Button>
               </div>
             </motion.div>
@@ -1332,7 +1469,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <span className={column.color}>{column.icon}</span>
-                          <h3 className="font-medium text-sm">{column.title}</h3>
+                          <h3 className="font-medium text-sm">{statusLabel(column.id)}</h3>
                         </div>
                         <div className="flex items-center gap-2">
                           <Badge variant="secondary" className="text-xs">
@@ -1351,7 +1488,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                                   return newSet;
                                 });
                               }}
-                              title={`Select all ${column.title} projects`}
+                              title={t('scheduler.selectAllColumn', { title: statusLabel(column.id) })}
                             >
                               <CheckSquare className="w-3 h-3" />
                             </Button>
@@ -1368,6 +1505,8 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                       sharedRef={boardSharedRef}
                       itemHeight={108}
                       overscan={5}
+                      isCustomSort={projectSortBy === 'custom'}
+                      onReorder={(projectId, targetIndex) => handleReorderInColumn(column.id, projectId, targetIndex)}
                     />
                   </div>
                 ))}
@@ -1383,17 +1522,17 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
             <DialogTitle>
-              {editingProject ? 'Edit Project' : 'Create New Project'}
+              {editingProject ? t('scheduler.editProject') : t('scheduler.createProject')}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 pt-2">
             {/* Title */}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Title *</label>
+              <label className="text-sm font-medium">{t('form.titleRequired')}</label>
               <Input
                 value={projectFormData.title}
                 onChange={(e) => setProjectFormData({ ...projectFormData, title: e.target.value })}
-                placeholder="Project title"
+                placeholder={t('form.placeholder.title')}
                 autoFocus
               />
             </div>
@@ -1401,32 +1540,32 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
             {/* BPM and Key Row */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">BPM</label>
+                <label className="text-sm font-medium">{t('form.bpm')}</label>
                 <Input
                   type="number"
                   min={0}
                   max={999}
                   value={projectFormData.bpm || ''}
                   onChange={(e) => setProjectFormData({ ...projectFormData, bpm: parseInt(e.target.value) || 0 })}
-                  placeholder="120"
+                  placeholder={t('form.placeholder.bpm')}
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Key</label>
+                <label className="text-sm font-medium">{t('form.key')}</label>
                 <Select
                   value={projectFormData.musicalKey || 'None'}
                   onValueChange={(value) => setProjectFormData({ ...projectFormData, musicalKey: value })}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="Select key" />
+                    <SelectValue placeholder={t('form.placeholder.key')} />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="None">No key</SelectItem>
                     {['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].map((key) => (
-                      <SelectItem key={`${key} Major`} value={`${key} Major`}>{key} Major</SelectItem>
+                      <SelectItem key={`${key} Major`} value={`${key} Major`}>{key} {t('modal.modeMajor')}</SelectItem>
                     ))}
                     {['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].map((key) => (
-                      <SelectItem key={`${key} Minor`} value={`${key} Minor`}>{key} Minor</SelectItem>
+                      <SelectItem key={`${key} Minor`} value={`${key} Minor`}>{key} {t('modal.modeMinor')}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -1444,7 +1583,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                   <SelectValue placeholder="Select DAW" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">Not specified</SelectItem>
+                  <SelectItem value="none">{t('scheduler.notSpecified')}</SelectItem>
                   {settings.selectedDAWs?.map((daw) => (
                     <SelectItem key={daw} value={daw}>{daw}</SelectItem>
                   ))}
@@ -1454,7 +1593,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
 
             {/* Tags */}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Tags</label>
+              <label className="text-sm font-medium">{t('form.tags')}</label>
               <div className="flex flex-wrap gap-2 p-3 rounded-lg bg-muted/30 border border-input min-h-[48px]">
                 {projectFormData.tags.map((tag) => (
                   <Badge key={tag} variant="secondary" className="gap-1 pr-1.5">
@@ -1486,7 +1625,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
                       }
                     }
                   }}
-                  placeholder={projectFormData.tags.length === 0 ? "Add tags..." : ""}
+                  placeholder={projectFormData.tags.length === 0 ? t('form.placeholder.tags') : ""}
                   className="flex-1 min-w-[100px] bg-transparent border-none outline-none text-sm placeholder:text-muted-foreground"
                 />
               </div>
@@ -1529,10 +1668,10 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
             {/* Actions */}
             <div className="flex justify-end gap-2 pt-4">
               <Button variant="outline" onClick={handleCancelProjectEdit}>
-                Cancel
+                {t('common.cancel')}
               </Button>
               <Button onClick={handleSaveProject} disabled={!projectFormData.title.trim()}>
-                {editingProject ? 'Save Changes' : 'Create Project'}
+                {editingProject ? t('scheduler.saveChanges') : t('scheduler.createProject')}
               </Button>
             </div>
           </div>
@@ -1553,7 +1692,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
             className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <Edit3 className="w-4 h-4" />
-            Edit Project
+            {t('scheduler.editProject')}
           </button>
           <button
             onClick={() => {
@@ -1566,7 +1705,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
             className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <FolderOpen className="w-4 h-4" />
-            Open in DAW
+            {t('scheduler.openInDaw')}
           </button>
           <button
             onClick={() => {
@@ -1576,7 +1715,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
             className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <Copy className="w-4 h-4" />
-            Copy Title
+            {t('scheduler.copyTitle')}
           </button>
           <div className="my-1 h-px bg-border" />
           <button
@@ -1588,11 +1727,11 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
             className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <MousePointer2 className="w-4 h-4" />
-            Select Multiple
+            {t('scheduler.selectMultiple')}
           </button>
           <div className="my-1 h-px bg-border" />
           {/* Quick Status Change */}
-          <div className="px-2 py-1 text-xs text-muted-foreground font-medium">Move to</div>
+          <div className="px-2 py-1 text-xs text-muted-foreground font-medium">{t('scheduler.moveTo')}</div>
           {PROJECT_COLUMNS.filter(col => col.id !== contextMenu.project?.status).slice(0, 4).map((column) => (
             <button
               key={column.id}
@@ -1604,7 +1743,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
               className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
             >
               <span className={column.color}>{column.icon}</span>
-              {column.title}
+              {statusLabel(column.id)}
             </button>
           ))}
           <div className="my-1 h-px bg-border" />
@@ -1617,7 +1756,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
             className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <Archive className="w-4 h-4" />
-            Archive
+            {t('scheduler.archive')}
           </button>
           <button
             onClick={async () => {
@@ -1630,7 +1769,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
             className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10"
           >
             <Trash2 className="w-4 h-4" />
-            Delete Project
+            {t('scheduler.deleteProject')}
           </button>
         </div>
       )}

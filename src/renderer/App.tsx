@@ -10,19 +10,26 @@ import { Scheduler } from "./pages/Scheduler"
 import { Settings } from "./pages/Settings"
 import { Statistics } from "./pages/Statistics"
 import { ProjectDetail } from "./pages/ProjectDetail"
+import { HelpGuide } from "./pages/HelpGuide"
+import { SharedWithMe } from "./pages/SharedWithMe"
+import { AppTour } from "./components/AppTour"
 import { ArtworkManager } from "./components/ArtworkManager"
 import { AudioPlayer } from "./components/AudioPlayer"
 import { ToastProvider, useToast } from "./components/ui/toast"
 import { ThemeProvider } from "./components/ThemeProvider"
 import { TooltipProvider } from "./components/ui/tooltip"
-import { Project, ProjectGroup, Task, Tag, AudioPlayerState, AppSettings } from "@shared/types"
+import { I18nProvider } from "./i18n"
+import { Project, ProjectGroup, Task, Tag, AudioPlayerState, AppSettings, PluginSession, PluginEvent } from "@shared/types"
 import { DEFAULT_SETTINGS } from "@/lib/constants"
 import { invalidateImageCache } from "@/lib/utils"
+import { PluginStatusBadge } from "./components/PluginStatus"
+import { useAuth } from "./contexts/AuthContext"
+import { syncVersionToShares } from "./lib/sharingService"
 
 // Check if running in Electron - must be a function to check at runtime after preload
 const isElectron = () => typeof window !== 'undefined' && typeof window.electron !== 'undefined'
 
-type Page = "dashboard" | "groups" | "group-detail" | "scheduler" | "settings" | "statistics" | "project-detail"
+type Page = "dashboard" | "groups" | "group-detail" | "scheduler" | "settings" | "statistics" | "project-detail" | "help" | "shared"
 
 function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onSettingsChange: (settings: Partial<AppSettings>) => void }) {
   const [currentPage, setCurrentPage] = useState<Page>("dashboard")
@@ -60,8 +67,43 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
   } | null>(null)
 
   const [artworkManagerProject, setArtworkManagerProject] = useState<Project | null>(null)
+  const [showTour, setShowTour] = useState(false)
+
+  // Show tour on first launch
+  useEffect(() => {
+    if (!settings.hasSeenTour && !isLoading) {
+      // Small delay to let the app render first
+      const timer = setTimeout(() => setShowTour(true), 800)
+      return () => clearTimeout(timer)
+    }
+  }, [settings.hasSeenTour, isLoading])
+
+  const handleStartTour = useCallback(() => {
+    setCurrentPage("dashboard")
+    setTimeout(() => setShowTour(true), 200)
+  }, [])
+
+  const handleCompleteTour = useCallback(() => {
+    setShowTour(false)
+    onSettingsChange({ hasSeenTour: true })
+  }, [onSettingsChange])
+
+  const handleCloseTour = useCallback(() => {
+    setShowTour(false)
+    onSettingsChange({ hasSeenTour: true })
+  }, [onSettingsChange])
+
+  // Plugin session state
+  const [pluginSessions, setPluginSessions] = useState<PluginSession[]>([])
+
+  // Refs for stable callbacks - avoid re-creating callbacks when these change frequently
+  const projectsRef = useRef(projects)
+  projectsRef.current = projects
+  const playerStateRef = useRef(playerState)
+  playerStateRef.current = playerState
 
   const { addToast } = useToast()
+  const { isAuthenticated, user, profile } = useAuth()
 
   const refreshData = useCallback(async () => {
     if (!isElectron()) {
@@ -146,8 +188,10 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
 
       // Listen for photo progress updates (Tauri event)
       let unlistenPhoto: (() => void) | null = null
+      let cancelled = false
       {
         import("@tauri-apps/api/event").then(({ listen }) => {
+          if (cancelled) return
           listen("photo-progress", (event: any) => {
             const p = event.payload
             setPhotoProgress({
@@ -159,15 +203,117 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
               cancelled: p.cancelled,
             })
           }).then((unlisten) => {
+            if (cancelled) { unlisten(); return }
             unlistenPhoto = unlisten
           })
         })
       }
 
+      // Listen for plugin events (Tauri event)
+      let unlistenPlugin: (() => void) | null = null
+      {
+        import("@tauri-apps/api/event").then(({ listen }) => {
+          if (cancelled) return
+          listen("plugin-event", (event: any) => {
+            const pluginEvent = event.payload as PluginEvent
+            console.log("[Plugin Event]", pluginEvent.type, pluginEvent)
+            if (pluginEvent.type === "sessionsChanged" && pluginEvent.sessions) {
+              setPluginSessions(pluginEvent.sessions)
+
+              // Auto-link: if any unlinked session has a lastProjectId, relink it
+              for (const session of pluginEvent.sessions) {
+                if (!session.linkedProjectId && session.lastProjectId) {
+                  console.log("[Plugin] Auto-relinking session", session.sessionId, "to project", session.lastProjectId)
+                  window.electron?.linkPluginToProject(session.sessionId, session.lastProjectId).catch((err: any) => {
+                    console.warn("[Plugin] Auto-relink failed:", err)
+                  })
+                }
+              }
+            } else if (pluginEvent.type === "pluginRecordingComplete") {
+              // Auto-import the recording as an audio version
+              console.log("[Plugin] Recording complete, importing:", pluginEvent)
+              if (pluginEvent.sessionId && pluginEvent.projectId && pluginEvent.filePath && pluginEvent.name) {
+                const recordingSource = pluginEvent.source || "auto"
+                const peakDb = pluginEvent.peakDb ?? null
+                const rmsDb = pluginEvent.rmsDb ?? null
+                console.log(`[Plugin] Calling importPluginRecording with source: ${recordingSource}, peakDb: ${peakDb}, rmsDb: ${rmsDb}`)
+                window.electron?.importPluginRecording(
+                  pluginEvent.sessionId,
+                  pluginEvent.projectId,
+                  pluginEvent.filePath,
+                  pluginEvent.name,
+                  recordingSource,
+                  peakDb,
+                  rmsDb,
+                ).then((version) => {
+                  console.log("[Plugin] Recording imported as version:", version)
+                  addToast({
+                    title: "Recording imported",
+                    description: `"${pluginEvent.name}" added as new audio version`,
+                  })
+                  refreshData()
+
+                  // Auto-analyze the recording for dB/LUFS data
+                  if (version?.id) {
+                    window.electron?.analyzeAudioVersion(version.id).then(() => {
+                      console.log("[Plugin] Audio analysis complete for version:", version.id)
+                      refreshData()
+                    }).catch((err: any) => {
+                      console.warn("[Plugin] Audio analysis failed (non-critical):", err)
+                    })
+                  }
+
+                  // Auto-sync to shared projects
+                  if (isAuthenticated && user && version) {
+                    syncVersionToShares(
+                      user.id,
+                      profile?.display_name || user.email || "Unknown",
+                      pluginEvent.projectId,
+                      {
+                        name: version.name || pluginEvent.name,
+                        filePath: version.file_path || pluginEvent.filePath,
+                        versionNumber: version.version_number ?? 1,
+                        isFavorite: false,
+                      }
+                    ).then((count) => {
+                      if (count > 0) {
+                        console.log(`[Plugin] Auto-synced recording to ${count} share(s)`)
+                      }
+                    }).catch((err) => {
+                      console.warn("[Plugin] Auto-sync failed (non-critical):", err)
+                    })
+                  }
+                }).catch((err: any) => {
+                  console.error("[Plugin] Failed to import recording:", err)
+                  addToast({
+                    title: "Failed to import recording",
+                    description: String(err),
+                    variant: "destructive",
+                  })
+                })
+              } else {
+                console.warn("[Plugin] Recording complete event missing fields:", pluginEvent)
+                console.warn("[Plugin] Event payload keys:", Object.keys(pluginEvent))
+              }
+            }
+          }).then((unlisten) => {
+            if (cancelled) { unlisten(); return }
+            unlistenPlugin = unlisten
+          })
+        })
+      }
+
+      // Load initial plugin sessions
+      window.electron?.getPluginSessions?.().then((sessions: PluginSession[]) => {
+        if (!cancelled) setPluginSessions(sessions)
+      }).catch(() => {})
+
       // Cleanup listeners on unmount
       return () => {
+        cancelled = true
         window.electron?.ipcRenderer.removeListener('scan:progress', handleScanProgress)
         unlistenPhoto?.()
+        unlistenPlugin?.()
       }
     }
   }, [refreshData])
@@ -242,24 +388,28 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
 
       // Scan all selected DAW folders (only those with configured paths)
       for (const daw of settings.selectedDAWs) {
-        const folderPath = settings.dawFolders[daw]
+        const folders = settings.dawFolders[daw] || []
 
         // Skip DAWs without configured folders (don't show error)
-        if (!folderPath) {
+        if (folders.length === 0) {
           skippedDAWs.push(daw)
           continue
         }
 
-        let result
-        if (daw === "FL Studio") {
-          result = await window.electron?.scanFLStudioFolder(folderPath)
-        } else if (daw === "Ableton Live") {
-          result = await window.electron?.scanAbletonFolder(folderPath)
-        }
+        for (const folderPath of folders) {
+          let result
+          if (daw === "FL Studio") {
+            result = await window.electron?.scanFLStudioFolder(folderPath)
+          } else if (daw === "Ableton Live") {
+            result = await window.electron?.scanAbletonFolder(folderPath)
+          } else {
+            result = await window.electron?.scanDAWFolder(folderPath, daw)
+          }
 
-        if (result && result.count > 0) {
-          totalScanned += result.count
-          scannedDAWs.push(daw)
+          if (result && result.count > 0) {
+            totalScanned += result.count
+            if (!scannedDAWs.includes(daw)) scannedDAWs.push(daw)
+          }
         }
       }
 
@@ -299,6 +449,20 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     }
   }, [addToast, refreshData, settings.selectedDAWs, settings.dawFolders, settings.flStudioPath])
 
+  // Auto-scan on startup if enabled
+  useEffect(() => {
+    if (settings.autoScanOnStartup && !isLoading) {
+      // Only auto-scan if at least one DAW folder is configured
+      const hasConfiguredFolder = settings.selectedDAWs.some(
+        daw => (settings.dawFolders[daw] || []).length > 0
+      )
+      if (hasConfiguredFolder) {
+        handleScanFolder()
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading]) // Only run once after initial load
+
   const handleScanFolderWithSelection = useCallback(async () => {
     if (!isElectron()) {
       addToast({
@@ -317,21 +481,24 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
       if (!folderPath) return
 
       // Determine which DAW(s) this folder is for by checking file extensions
-      let hasFLP = false
-      let hasALS = false
+      let detectedDAWs: string[] = []
       try {
-        const detection = await window.electron?.detectProjects(folderPath) || { hasFLP: false, hasALS: false }
-        hasFLP = detection.hasFLP
-        hasALS = detection.hasALS
+        const detection = await window.electron?.detectProjects(folderPath) || { hasFLP: false, hasALS: false, detectedDAWs: [] }
+        detectedDAWs = detection.detectedDAWs || []
+        // Backward compatibility: if detectedDAWs is empty, fall back to hasFLP/hasALS
+        if (detectedDAWs.length === 0) {
+          if (detection.hasFLP) detectedDAWs.push("FL Studio")
+          if (detection.hasALS) detectedDAWs.push("Ableton Live")
+        }
       } catch (error) {
         // If we can't read the folder, default to FL Studio for backward compatibility
-        hasFLP = true
+        detectedDAWs = ["FL Studio"]
       }
 
-      if (!hasFLP && !hasALS) {
+      if (detectedDAWs.length === 0) {
         addToast({
           title: "No project files detected",
-          description: "The selected folder doesn't contain FL Studio (.flp/.zip) or Ableton (.als) files",
+          description: "The selected folder doesn't contain any recognized DAW project files",
           variant: "destructive",
         })
         return
@@ -339,26 +506,27 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
 
       // Update settings with the selected folder for detected DAW(s)
       const updatedDawFolders = { ...settings.dawFolders }
-      if (hasFLP) updatedDawFolders["FL Studio"] = folderPath
-      if (hasALS) updatedDawFolders["Ableton Live"] = folderPath
+      for (const daw of detectedDAWs) {
+        const existing = updatedDawFolders[daw] || []
+        if (!existing.includes(folderPath)) updatedDawFolders[daw] = [...existing, folderPath]
+      }
       await onSettingsChange({ dawFolders: updatedDawFolders })
-
-      const detectedNames: string[] = []
-      if (hasFLP) detectedNames.push("FL Studio")
-      if (hasALS) detectedNames.push("Ableton Live")
 
       addToast({
         title: "Scanning folder...",
-        description: `Looking for ${detectedNames.join(" & ")} projects`,
+        description: `Looking for ${detectedDAWs.join(" & ")} projects`,
       })
 
       let totalCount = 0
-      if (hasFLP) {
-        const result = await window.electron?.scanFLStudioFolder(folderPath)
-        if (result?.count) totalCount += result.count
-      }
-      if (hasALS) {
-        const result = await window.electron?.scanAbletonFolder(folderPath)
+      for (const daw of detectedDAWs) {
+        let result
+        if (daw === "FL Studio") {
+          result = await window.electron?.scanFLStudioFolder(folderPath)
+        } else if (daw === "Ableton Live") {
+          result = await window.electron?.scanAbletonFolder(folderPath)
+        } else {
+          result = await window.electron?.scanDAWFolder(folderPath, daw)
+        }
         if (result?.count) totalCount += result.count
       }
 
@@ -366,7 +534,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
         await refreshData()
         addToast({
           title: "Scan complete",
-          description: `Added ${totalCount} projects from ${detectedNames.join(" & ")}`,
+          description: `Added ${totalCount} projects from ${detectedDAWs.join(" & ")}`,
           variant: "success",
         })
       } else {
@@ -587,9 +755,9 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
 
   const handleOpenArtworkManager = useCallback((project: Project) => {
     // Get the latest version of the project from state
-    const latest = projects.find(p => p.id === project.id) || project
+    const latest = projectsRef.current.find(p => p.id === project.id) || project
     setArtworkManagerProject(latest)
-  }, [projects])
+  }, [])
 
   const handleDeleteProject = useCallback(async (project: Project) => {
     try {
@@ -609,7 +777,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
 
   const handleOpenProject = useCallback((project: Project) => {
     // Find the project in the projects array to ensure object reference stability
-    const existingProject = projects.find(p => p.id === project.id)
+    const existingProject = projectsRef.current.find(p => p.id === project.id)
     if (existingProject) {
       setSelectedProject(existingProject)
     } else {
@@ -617,21 +785,22 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     }
 
     // Save and hide the audio player when entering project detail
-    if (playerState.currentTrack) {
-      savedPlayerStateRef.current = { ...playerState }
+    const ps = playerStateRef.current
+    if (ps.currentTrack) {
+      savedPlayerStateRef.current = { ...ps }
       setPlayerState({
         isPlaying: false,
         currentTrack: null,
-        currentTime: playerState.currentTime,
-        duration: playerState.duration,
-        volume: playerState.volume,
+        currentTime: ps.currentTime,
+        duration: ps.duration,
+        volume: ps.volume,
       })
     }
 
     // Remember where we came from
     setPreviousPage(currentPage as Page)
     setCurrentPage("project-detail")
-  }, [projects, currentPage, playerState])
+  }, [currentPage])
 
   const handleBackFromProject = useCallback(() => {
     setSelectedProject(null)
@@ -666,19 +835,21 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
       const scannedDAWs: string[] = []
 
       for (const daw of settings.selectedDAWs) {
-        const folderPath = settings.dawFolders[daw]
-        if (!folderPath) continue
+        const folders = settings.dawFolders[daw] || []
+        if (folders.length === 0) continue
 
-        let result
-        if (daw === "FL Studio") {
-          result = await window.electron?.scanFLStudioFolder(folderPath)
-        } else if (daw === "Ableton Live") {
-          result = await window.electron?.scanAbletonFolder(folderPath)
-        }
+        for (const folderPath of folders) {
+          let result
+          if (daw === "FL Studio") {
+            result = await window.electron?.scanFLStudioFolder(folderPath)
+          } else if (daw === "Ableton Live") {
+            result = await window.electron?.scanAbletonFolder(folderPath)
+          }
 
-        if (result && result.count > 0) {
-          totalScanned += result.count
-          scannedDAWs.push(daw)
+          if (result && result.count > 0) {
+            totalScanned += result.count
+            if (!scannedDAWs.includes(daw)) scannedDAWs.push(daw)
+          }
         }
       }
 
@@ -769,6 +940,56 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     }
   }, []);
 
+  // Plugin handlers
+  const handleLinkPlugin = useCallback(async (sessionId: string, projectId: string) => {
+    if (!isElectron()) return
+    try {
+      await window.electron?.linkPluginToProject(sessionId, projectId)
+      addToast({ title: "Plugin linked", description: "VST3 plugin linked to project" })
+    } catch (error) {
+      console.error("Failed to link plugin:", error)
+      addToast({ title: "Failed to link plugin", description: String(error), variant: "destructive" })
+    }
+  }, [addToast])
+
+  const handleUnlinkPlugin = useCallback(async (sessionId: string) => {
+    if (!isElectron()) return
+    try {
+      await window.electron?.unlinkPluginFromProject(sessionId)
+      addToast({ title: "Plugin unlinked", description: "VST3 plugin unlinked from project" })
+    } catch (error) {
+      console.error("Failed to unlink plugin:", error)
+    }
+  }, [addToast])
+
+  const handleStartPluginRecording = useCallback(async (sessionId: string) => {
+    if (!isElectron()) return
+    try {
+      await window.electron?.requestPluginStartRecording(sessionId)
+    } catch (error) {
+      console.error("Failed to start plugin recording:", error)
+      addToast({ title: "Failed to start recording", description: String(error), variant: "destructive" })
+    }
+  }, [addToast])
+
+  const handleStopPluginRecording = useCallback(async (sessionId: string) => {
+    if (!isElectron()) return
+    try {
+      await window.electron?.requestPluginStopRecording(sessionId)
+    } catch (error) {
+      console.error("Failed to stop plugin recording:", error)
+    }
+  }, [addToast])
+
+  const handleToggleOfflineCapture = useCallback((sessionId: string, enabled: boolean) => {
+    // Update local state optimistically — the plugin will also receive the update
+    setPluginSessions(prev => prev.map(s =>
+      s.sessionId === sessionId ? { ...s, captureOfflineRenders: enabled } : s
+    ))
+    // TODO: send the preference to the plugin via WebSocket when backend supports it
+    console.log("[Plugin] Toggle offline capture for session", sessionId, ":", enabled)
+  }, [])
+
   const handleOpenGroup = useCallback((group: ProjectGroup) => {
     setSelectedGroup(group)
     setCurrentPage("group-detail")
@@ -801,6 +1022,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             onUpdateGroup={handleUpdateGroup}
             onSettingsChange={onSettingsChange}
             onOpenArtworkManager={handleOpenArtworkManager}
+            pluginSessions={pluginSessions}
           />
         )
       case "project-detail":
@@ -821,6 +1043,13 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             tags={tags}
             onCreateTag={handleCreateTag}
             onOpenArtworkManager={handleOpenArtworkManager}
+            pluginSessions={pluginSessions}
+            projects={projects}
+            onLinkPlugin={handleLinkPlugin}
+            onUnlinkPlugin={handleUnlinkPlugin}
+            onStartPluginRecording={handleStartPluginRecording}
+            onStopPluginRecording={handleStopPluginRecording}
+            onToggleOfflineCapture={handleToggleOfflineCapture}
           />
         )
       case "groups":
@@ -862,6 +1091,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             onDeleteProject={handleDeleteProject}
             onSettingsChange={onSettingsChange}
             onOpenArtworkManager={handleOpenArtworkManager}
+            pluginSessions={pluginSessions}
           />
         )
       case "scheduler":
@@ -877,6 +1107,15 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
           settings={settings}
           onSettingsChange={handleSettingsChange}
           onRemoveAllArtwork={handleRemoveAllArtwork}
+        />
+      case "shared":
+        return <SharedWithMe />
+      case "help":
+        return <HelpGuide
+          onBack={() => setCurrentPage(previousPage === "help" ? "dashboard" : previousPage)}
+          onStartTour={handleStartTour}
+          settings={settings}
+          onSettingsChange={onSettingsChange}
         />
       default:
         return null
@@ -965,6 +1204,13 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
           }}
         />
       )}
+      <AppTour
+        isOpen={showTour}
+        onClose={handleCloseTour}
+        onComplete={handleCompleteTour}
+        currentPage={currentPage}
+        onNavigate={setCurrentPage}
+      />
     </div>
   )
 }
@@ -978,12 +1224,28 @@ function App() {
         try {
           const loadedSettings = await window.electron?.getSettings()
           if (loadedSettings) {
+            // Migrate legacy formats into dawFolders arrays
+            if (loadedSettings.dawFolders) {
+              const migrated = { ...loadedSettings.dawFolders }
+              let needsMigration = false
+              for (const [daw, val] of Object.entries(migrated)) {
+                if (typeof val === 'string') {
+                  (migrated as Record<string, string[]>)[daw] = [val]
+                  needsMigration = true
+                }
+              }
+              if (needsMigration) {
+                loadedSettings.dawFolders = migrated as Record<string, string[]>
+              }
+            }
             // Migrate legacy flStudioPath into dawFolders if needed
-            if (loadedSettings.flStudioPath && !loadedSettings.dawFolders?.["FL Studio"]) {
+            if (loadedSettings.flStudioPath && (!loadedSettings.dawFolders?.["FL Studio"] || loadedSettings.dawFolders["FL Studio"].length === 0)) {
               loadedSettings.dawFolders = {
                 ...loadedSettings.dawFolders,
-                "FL Studio": loadedSettings.flStudioPath
+                "FL Studio": [loadedSettings.flStudioPath]
               }
+            }
+            if (loadedSettings.flStudioPath || Object.values(loadedSettings.dawFolders || {}).some(v => typeof v === 'string')) {
               // Persist the migration so it only happens once
               await window.electron?.setSettings(loadedSettings)
             }
@@ -998,26 +1260,31 @@ function App() {
   }, [])
 
   const handleSettingsChange = useCallback(async (newSettings: Partial<AppSettings>) => {
-    const updatedSettings = { ...settings, ...newSettings }
-    setSettings(updatedSettings)
+    let updatedSettings: AppSettings | null = null
+    setSettings(prev => {
+      updatedSettings = { ...prev, ...newSettings }
+      return updatedSettings
+    })
 
-    if (isElectron()) {
+    if (isElectron() && updatedSettings) {
       try {
         await window.electron?.setSettings(updatedSettings)
       } catch (error) {
         console.error("Failed to save settings:", error)
       }
     }
-  }, [settings])
+  }, [])
 
   return (
     <ErrorBoundary>
       <ToastProvider>
-        <ThemeProvider settings={settings} onSettingsChange={handleSettingsChange}>
-          <TooltipProvider delayDuration={100}>
-            <AppContent settings={settings} onSettingsChange={handleSettingsChange} />
-          </TooltipProvider>
-        </ThemeProvider>
+        <I18nProvider language={settings.language || 'en'}>
+          <ThemeProvider settings={settings} onSettingsChange={handleSettingsChange}>
+            <TooltipProvider delayDuration={100}>
+              <AppContent settings={settings} onSettingsChange={handleSettingsChange} />
+            </TooltipProvider>
+          </ThemeProvider>
+        </I18nProvider>
       </ToastProvider>
     </ErrorBoundary>
   )

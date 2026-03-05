@@ -1,0 +1,125 @@
+---
+title: "Understanding LUFS, RMS, and Peak: A Producer's Guide"
+description: "A practical guide to the three audio measurements that matter most for mixing, mastering, and loudness management in music production."
+date: "2026-02-10"
+author: "DBundone Team"
+tags: ["mixing", "mastering", "audio analysis", "LUFS"]
+---
+
+If you've ever uploaded a track to Spotify and it came back sounding quieter (or louder) than you expected, you've already encountered the world of loudness measurement. But the terminology can be confusing. LUFS, RMS, true peak, momentary loudness, integrated loudness — what do these actually mean, and which ones should you care about?
+
+This guide breaks it down in practical terms.
+
+## The three measurements that matter
+
+There are dozens of audio metrics, but for music production, three matter most:
+
+1. **LUFS** (Loudness Units Full Scale) — perceived loudness
+2. **RMS** (Root Mean Square) — average signal power
+3. **True Peak** — the absolute maximum level
+
+Each measures a different thing, and you need all three to make informed mixing and mastering decisions.
+
+## LUFS: How loud does it sound?
+
+LUFS is the current standard for measuring perceived loudness. Unlike simple level meters, LUFS accounts for how human ears actually perceive sound. It applies frequency weighting (the K-weighting curve) that boosts the midrange and rolls off the low bass — matching how we hear.
+
+There are three LUFS measurements:
+
+### Integrated LUFS
+
+This is the most important one. It measures the average perceived loudness of the entire track (or file). When streaming platforms normalize your music, they use integrated LUFS as the target.
+
+Typical targets:
+- **Spotify**: -14 LUFS integrated
+- **Apple Music**: -16 LUFS integrated
+- **YouTube**: -14 LUFS integrated
+- **CD / No normalization**: -9 to -12 LUFS integrated
+
+If your master is at -8 LUFS (very loud), Spotify will turn it down to reach -14. If it's at -18 LUFS (very quiet), Spotify will turn it up. The track that's already at -14 LUFS will sound the most natural, because no gain adjustment is applied.
+
+### Short-term LUFS
+
+Measured over a 3-second window. Useful for checking loudness consistency across sections of your track. If your verse is at -16 LUFS short-term and your drop is at -8, you have a large dynamic range — which might be intentional, or might be a mixing issue.
+
+### Momentary LUFS
+
+Measured over a 400-millisecond window. The fastest loudness measurement. Useful for catching sudden peaks in perceived loudness, like a snare hit that's disproportionately loud.
+
+## RMS: The average power
+
+RMS measures the average power of your audio signal. It's a pure mathematical measurement — no frequency weighting, no perceptual modeling. Just the average level.
+
+RMS is useful for:
+
+- **Comparing mix density**: A track with -10 dB RMS is more compressed/dense than one at -16 dB RMS
+- **Gain staging**: Keeping RMS levels consistent across tracks in a project helps maintain headroom
+- **Before/after compression**: If you compress a bus and the RMS goes up by 4 dB while the peak stays the same, you can see exactly how much the dynamics were reduced
+
+RMS doesn't tell you how loud something *sounds* (that's what LUFS is for), but it tells you how much energy is in the signal. Think of RMS as a physics measurement and LUFS as a psychoacoustic measurement.
+
+## True Peak: The maximum level
+
+True peak is the absolute maximum sample value in your audio, measured with inter-sample peak detection. This is different from the "peak" reading on your DAW's meter, which only looks at individual samples.
+
+Why does this matter? Digital audio is a series of discrete samples. Between two samples, the actual analog waveform might exceed 0 dBFS even if neither sample does. This is called an inter-sample peak, and it can cause distortion in D/A converters and codecs.
+
+For mastering, the standard recommendation is:
+
+- **True peak ceiling**: -1.0 dBTP (dB True Peak)
+- **Streaming-safe ceiling**: -1.0 to -2.0 dBTP
+
+If your true peak is above 0 dBTP, your audio will clip on some playback systems. Even if it sounds fine in your headphones, it might distort on Bluetooth speakers, in car systems, or after being transcoded to AAC or Ogg Vorbis by a streaming platform.
+
+## How these metrics work together
+
+Here's how to use all three in practice:
+
+### Scenario 1: Checking a mix before mastering
+
+You've finished mixing and you export a pre-master. Check:
+- **Integrated LUFS**: Should be around -18 to -14 LUFS for a dynamic mix that gives the mastering engineer room to work
+- **True Peak**: Should be below -1 dBTP. If it's at 0 or above, you're clipping.
+- **RMS**: Note this as a baseline. After mastering, you can compare to see how much the dynamics changed.
+
+### Scenario 2: Comparing two versions of a master
+
+You mastered a track two different ways. Version A is louder, version B feels punchier. Check the metrics:
+
+| Metric | Version A | Version B |
+|--------|-----------|-----------|
+| LUFS   | -9.2      | -12.4     |
+| RMS    | -9.8 dB   | -13.1 dB  |
+| Peak   | -0.3 dBTP | -1.0 dBTP |
+
+Version A is nearly 3 LUFS louder and has almost no headroom (0.3 dBTP ceiling). On Spotify, it'll be turned down to -14 LUFS — a reduction of nearly 5 dB, which will dull the transients. Version B has more dynamic range and will require less normalization, likely sounding better on streaming platforms.
+
+### Scenario 3: Tracking progress over multiple sessions
+
+You've been working on a mix over three sessions. Your version history shows:
+
+| Session | LUFS  | RMS     | Peak    |
+|---------|-------|---------|---------|
+| Day 1   | -16.1 | -17.2   | -3.1    |
+| Day 2   | -13.8 | -14.5   | -1.2    |
+| Day 3   | -11.2 | -12.0   | -0.1    |
+
+Each session, the mix got louder and more compressed. By day 3, you're nearly out of headroom. This pattern suggests you might be falling victim to the "louder is better" bias — adding gain and compression each session. Having this data visible helps you catch and correct the trend.
+
+## Practical recommendations
+
+For most modern music production:
+
+1. **Mix to -14 to -16 LUFS integrated** if targeting streaming platforms
+2. **Keep true peak below -1.0 dBTP** — always
+3. **Use RMS to track compression** — if RMS increases more than 3-4 dB from your unmastered mix, you're compressing heavily
+4. **Measure per-version** — don't just check the final master. Track how your metrics evolve across versions to catch trends
+5. **A/B at matched loudness** — when comparing versions, level-match them first (by LUFS, not by peak). Otherwise your ears will fool you.
+
+## Tools for measurement
+
+Most DAWs include some form of loudness metering. But for tracking these measurements across versions and projects, you need something that stores the data — not just a real-time meter that resets when you stop playback.
+
+DBundone automatically runs LUFS, RMS, and true peak analysis on every audio version captured through the VST3 plugin or manually imported. This means your entire version history has searchable, comparable audio metrics attached to it.
+
+The goal isn't to obsess over numbers. It's to have objective data that complements your ears — especially during long sessions when ear fatigue makes subjective judgments unreliable.
