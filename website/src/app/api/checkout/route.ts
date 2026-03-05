@@ -1,17 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
-import { stripe, ALLOWED_PRICES, PriceTier, isStripeConfigured } from "@/lib/stripe";
+import {
+  stripe,
+  ALLOWED_PRICES,
+  PriceTier,
+  isStripeConfigured,
+} from "@/lib/stripe";
 
 // In-memory rate limiter (use Redis/Upstash in production for multi-instance)
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT = 5;
 const RATE_WINDOW_MS = 60_000;
-const MAX_MAP_SIZE = 10_000; // Prevent memory leak from too many unique IPs
+const MAX_MAP_SIZE = 10_000;
 
 function isRateLimited(ip: string): boolean {
   const now = Date.now();
 
-  // Clean up expired entries periodically
   if (rateLimitMap.size > MAX_MAP_SIZE) {
     for (const [key, entry] of rateLimitMap) {
       if (now > entry.resetAt) rateLimitMap.delete(key);
@@ -29,9 +33,27 @@ function isRateLimited(ip: string): boolean {
   return entry.count > RATE_LIMIT;
 }
 
+// All payment methods to offer at checkout
+// Card includes: Visa, Mastercard, Amex, Discover, etc.
+// Apple Pay & Google Pay are automatic with "card" when customer's device supports them
+// Enable each of these in Stripe Dashboard → Settings → Payment Methods
+const PAYMENT_METHODS: Stripe.Checkout.SessionCreateParams.PaymentMethodType[] =
+  [
+    "card", // Visa, Mastercard, Amex + Apple Pay + Google Pay
+    "paypal", // PayPal
+    "cashapp", // Cash App
+    "link", // Stripe Link (one-click checkout for returning customers)
+    "klarna", // Klarna (buy now pay later)
+    "bancontact", // Bancontact (Belgium)
+    "eps", // EPS (Austria)
+    "giropay", // Giropay (Germany)
+    "ideal", // iDEAL (Netherlands)
+    "p24", // Przelewy24 (Poland)
+    "sofort", // Sofort/Klarna (EU bank transfer)
+  ];
+
 export async function POST(req: NextRequest) {
   try {
-    // Check Stripe is configured
     if (!isStripeConfigured()) {
       return NextResponse.json(
         {
@@ -42,7 +64,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Rate limiting
     const ip =
       req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
     if (isRateLimited(ip)) {
@@ -52,7 +73,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Validate content type
     const contentType = req.headers.get("content-type");
     if (!contentType?.includes("application/json")) {
       return NextResponse.json(
@@ -61,7 +81,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Parse and validate request
     let body: Record<string, unknown>;
     try {
       body = await req.json();
@@ -74,7 +93,6 @@ export async function POST(req: NextRequest) {
 
     const tier = body.tier as PriceTier;
 
-    // Validate tier against server-side allowlist
     if (!tier || typeof tier !== "string" || !(tier in ALLOWED_PRICES)) {
       return NextResponse.json(
         { error: "Invalid pricing tier." },
@@ -94,49 +112,27 @@ export async function POST(req: NextRequest) {
     const siteUrl =
       process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
 
-    // All accepted payment methods — Stripe handles the UI for each
-    // Card = Visa/Mastercard/Amex, plus Apple Pay & Google Pay automatically
-    // PayPal, Cashapp, and crypto are additional options
-    // Note: Enable these in your Stripe Dashboard under Settings → Payment Methods
-    const paymentMethodTypes: Stripe.Checkout.SessionCreateParams.PaymentMethodType[] =
-      [
-        "card", // Credit/debit cards + Apple Pay + Google Pay (automatic)
-        "paypal", // PayPal
-        "cashapp", // Cash App
-      ];
-
-    // Create Stripe Checkout Session — all pricing is server-side
+    // Create Stripe Checkout Session
+    // NOTE: payment_intent_data is NOT used here because PayPal/Klarna/etc
+    // create their own payment objects. Metadata goes on the session instead.
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      payment_method_types: paymentMethodTypes,
+      payment_method_types: PAYMENT_METHODS,
       line_items: [
         {
-          price: priceId, // Server-side price ID, never from client
+          price: priceId,
           quantity: 1,
         },
       ],
-      // Collect customer email for license delivery
       customer_creation: "always",
-      // Payment configuration
-      payment_intent_data: {
-        description: "DBundone Pro License",
-        metadata: {
-          tier,
-          source: "website",
-        },
-      },
-      // URLs
       success_url: `${siteUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${siteUrl}/#pricing`,
-      // Options
       allow_promotion_codes: true,
       billing_address_collection: "auto",
-      // Session metadata
       metadata: {
         tier,
         source: "website",
       },
-      // Automatically expire after 30 minutes
       expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
     });
 
@@ -150,8 +146,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ url: session.url });
   } catch (error) {
     console.error("Stripe checkout error:", error);
-
-    // Don't expose internal error details to client
     return NextResponse.json(
       { error: "Failed to create checkout session. Please try again." },
       { status: 500 }
@@ -159,7 +153,6 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// Reject other methods
 export async function GET() {
   return NextResponse.json({ error: "Method not allowed." }, { status: 405 });
 }
