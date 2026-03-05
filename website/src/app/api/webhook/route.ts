@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { stripe } from "@/lib/stripe";
+import { getStripe } from "@/lib/stripe";
 import Stripe from "stripe";
 
 export const runtime = "nodejs";
@@ -15,7 +15,10 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (!stripe) {
+  let stripeClient;
+  try {
+    stripeClient = getStripe();
+  } catch {
     return NextResponse.json(
       { error: "Stripe not configured." },
       { status: 500 }
@@ -37,7 +40,7 @@ export async function POST(req: NextRequest) {
 
   // Verify webhook signature — prevents replay attacks and spoofed events
   try {
-    event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
+    event = stripeClient.webhooks.constructEvent(body, signature, webhookSecret);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error(`Webhook signature verification failed: ${message}`);

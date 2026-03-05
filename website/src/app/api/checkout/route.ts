@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import {
-  stripe,
+  getStripe,
   ALLOWED_PRICES,
   PriceTier,
   isStripeConfigured,
@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
     // Create Stripe Checkout Session
     // NOTE: payment_intent_data is NOT used here because PayPal/Klarna/etc
     // create their own payment objects. Metadata goes on the session instead.
-    const session = await stripe.checkout.sessions.create({
+    const session = await getStripe().checkout.sessions.create({
       mode: "payment",
       payment_method_types: PAYMENT_METHODS,
       line_items: [
