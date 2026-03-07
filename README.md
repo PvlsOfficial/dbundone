@@ -41,7 +41,7 @@
 
 ## Screenshots
 
-> Add screenshots to `assets/` and reference them here.
+> no screenshots yet.
 
 ## Quickstart
 
