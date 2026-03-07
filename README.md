@@ -20,6 +20,8 @@
   <a href="#license">License</a>
 </p>
 
+[![Ko-fi](https://img.shields.io/badge/Support%20on-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/pvlsofficial)
+
 ---
 
 ## Features
@@ -170,6 +172,12 @@ For cloud sharing features, see `supabase-schema.sql` for the required Supabase 
 | `Space` | Play / Pause audio preview |
 | `Escape` | Close modal |
 | `Ctrl+K` | Focus search |
+
+## Support
+
+If you find this useful, consider buying me a coffee!
+
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/pvlsofficial)
 
 ## Contributing
 
