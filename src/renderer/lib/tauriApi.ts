@@ -432,6 +432,10 @@ export const analyzeFlpProject = (
 ): Promise<FlpAnalysis> =>
   invoke("analyze_flp_project", { projectId, filePath });
 
+/** Returns all cached FLP analyses in one DB call: { [projectId]: FlpAnalysis } */
+export const getAllFlpAnalysesCached = (): Promise<Record<string, FlpAnalysis>> =>
+  invoke("get_all_flp_analyses_cached");
+
 export const clearFlpAnalysisCache = (
   projectId: string
 ): Promise<boolean> =>
@@ -655,6 +659,7 @@ export const electronCompat = {
 
   // FLP Analysis
   analyzeFlpProject,
+  getAllFlpAnalysesCached,
   clearFlpAnalysisCache,
 
   // User Profile

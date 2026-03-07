@@ -44,7 +44,31 @@ pub struct AppSettings {
     pub unsplash_enabled: bool,
     #[serde(rename = "sampleFolders", default)]
     pub sample_folders: Vec<String>,
+    #[serde(rename = "autoScanOnStartup", default = "default_true")]
+    pub auto_scan_on_startup: bool,
+    #[serde(rename = "defaultSort", default = "default_sort")]
+    pub default_sort: String,
+    #[serde(rename = "notificationsEnabled", default = "default_true")]
+    pub notifications_enabled: bool,
+    #[serde(rename = "notifyOnShare", default = "default_true")]
+    pub notify_on_share: bool,
+    #[serde(rename = "notifyOnAnnotation", default = "default_true")]
+    pub notify_on_annotation: bool,
+    #[serde(rename = "notifyOnStatusChange", default = "default_true")]
+    pub notify_on_status_change: bool,
+    #[serde(rename = "confirmDestructiveActions", default = "default_true")]
+    pub confirm_destructive_actions: bool,
+    #[serde(default = "default_language")]
+    pub language: String,
+    #[serde(rename = "hasSeenTour", default)]
+    pub has_seen_tour: bool,
+    #[serde(rename = "featureRequests", default)]
+    pub feature_requests: serde_json::Value,
 }
+
+fn default_true() -> bool { true }
+fn default_sort() -> String { "date-newest".to_string() }
+fn default_language() -> String { "en".to_string() }
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -63,6 +87,16 @@ impl Default for AppSettings {
             grid_size: "medium".to_string(),
             unsplash_enabled: true,
             sample_folders: vec![],
+            auto_scan_on_startup: true,
+            default_sort: "date-newest".to_string(),
+            notifications_enabled: true,
+            notify_on_share: true,
+            notify_on_annotation: true,
+            notify_on_status_change: true,
+            confirm_destructive_actions: true,
+            language: "en".to_string(),
+            has_seen_tour: false,
+            feature_requests: serde_json::json!([]),
         }
     }
 }
@@ -2595,6 +2629,33 @@ pub fn analyze_flp_project(
     let _ = database.save_flp_analysis_cache(&project_id, &json_str);
 
     Ok(json)
+}
+
+/// Returns all cached FLP analyses in a single DB query: { projectId: analysisJson, ... }
+/// This allows the frontend to instantly show statistics without re-analyzing every project.
+#[tauri::command]
+pub fn get_all_flp_analyses_cached(
+    db: State<DbState>,
+) -> Result<serde_json::Value, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    let conn = database.conn.lock().unwrap();
+    let mut stmt = conn
+        .prepare("SELECT project_id, analysis_json FROM flp_analysis_cache")
+        .map_err(|e| e.to_string())?;
+    let mut map = serde_json::Map::new();
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        if let Ok((project_id, json_str)) = row {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                map.insert(project_id, val);
+            }
+        }
+    }
+    Ok(serde_json::Value::Object(map))
 }
 
 #[tauri::command]

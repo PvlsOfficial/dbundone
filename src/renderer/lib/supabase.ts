@@ -169,6 +169,39 @@ export async function uploadSharedImage(
 }
 
 /**
+ * Upload a project file (FLP, ZIP, etc.) to Supabase Storage for sharing.
+ * Path: shared-media/projects/{fromUserId}/{shareId}/{filename}
+ * Returns the public URL.
+ */
+export async function uploadProjectFile(
+  fromUserId: string,
+  shareId: string,
+  fileName: string,
+  fileData: ArrayBuffer,
+  contentType = 'application/octet-stream'
+): Promise<string> {
+  const sb = getSupabase()
+  const path = `projects/${fromUserId}/${shareId}/${fileName}`
+  console.log('[Supabase] Uploading project file:', path, `(${(fileData.byteLength / 1024 / 1024).toFixed(1)} MB)`)
+
+  const { error } = await sb.storage
+    .from(MEDIA_BUCKET)
+    .upload(path, fileData, {
+      contentType,
+      upsert: true,
+    })
+
+  if (error) throw new Error(`Project file upload failed: ${error.message}`)
+
+  const { data: urlData } = sb.storage
+    .from(MEDIA_BUCKET)
+    .getPublicUrl(path)
+
+  console.log('[Supabase] Project file uploaded OK:', urlData.publicUrl)
+  return urlData.publicUrl
+}
+
+/**
  * Delete all shared media files for a share.
  */
 export async function deleteSharedMedia(

@@ -2,7 +2,8 @@
  * Sharing service — all Supabase-backed collaboration functions.
  * Talks directly to the Supabase REST API via the JS client.
  */
-import { getSupabase, uploadSharedAudio, uploadSharedImage } from '@/lib/supabase'
+import { getSupabase, uploadSharedAudio, uploadSharedImage, uploadProjectFile } from '@/lib/supabase'
+import type { FlpAnalysis } from '@shared/types'
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,26 @@ export interface SharedVersion {
   annotations: SharedAnnotation[]
 }
 
+export interface SharedTask {
+  id: string
+  title: string
+  description: string | null
+  status: 'todo' | 'in-progress' | 'done'
+  priority?: 'low' | 'medium' | 'high' | 'urgent' | null
+  dueDate?: string | null
+  order: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SharedPluginInfo {
+  name: string
+  isInstrument: boolean
+  isSampler: boolean
+  presetName: string | null
+  dllName: string | null
+}
+
 export interface CloudShare {
   id: string
   fromUserId: string
@@ -58,9 +79,18 @@ export interface CloudShare {
   audioName: string | null
   imageUrl: string | null
   imageName: string | null
+  // Project file (FLP/ZIP) for download
+  projectFileUrl: string | null
+  projectFileName: string | null
   // Collaboration
   permission: 'view' | 'edit'
   sharedVersions: SharedVersion[]
+  // Tasks shared with the project
+  sharedTasks: SharedTask[]
+  // Plugin list from FLP analysis for collaborator checklist
+  sharedPlugins: SharedPluginInfo[]
+  // Full FLP analysis (plugins, channels, mixer, samples, patterns)
+  sharedAnalysis: FlpAnalysis | null
   //
   message: string | null
   status: 'pending' | 'accepted' | 'declined'
@@ -133,8 +163,13 @@ function mapShare(row: any): CloudShare {
     audioName: row.audio_name,
     imageUrl: row.image_url,
     imageName: row.image_name,
+    projectFileUrl: row.project_file_url || null,
+    projectFileName: row.project_file_name || null,
     permission: row.permission || 'view',
     sharedVersions: row.shared_versions || [],
+    sharedTasks: row.shared_tasks || [],
+    sharedPlugins: row.shared_plugins || [],
+    sharedAnalysis: row.shared_analysis || null,
     message: row.message,
     status: row.status,
     createdAt: row.created_at,
@@ -185,6 +220,14 @@ export interface ShareProjectInput {
   /** Audio versions with annotations to upload */
   versions?: VersionToShare[]
   message?: string
+  /** Tasks to share with the project */
+  tasks?: SharedTask[]
+  /** Plugin list from FLP analysis */
+  plugins?: SharedPluginInfo[]
+  /** Full FLP analysis to store for collaborators */
+  analysis?: FlpAnalysis | null
+  /** Local path of FLP/ZIP project file to upload */
+  projectFilePath?: string | null
 }
 
 /**
@@ -202,6 +245,8 @@ export async function shareProject(
 
   let imageUrl: string | null = null
   let imageName: string | null = null
+  let projectFileUrl: string | null = null
+  let projectFileName: string | null = null
   const sharedVersions: SharedVersion[] = []
 
   // 1) Upload artwork image
@@ -264,7 +309,25 @@ export async function shareProject(
     }
   }
 
-  // 3) Single INSERT with all data — no UPDATE needed!
+  // 3) Upload project file (FLP/ZIP) if provided
+  if (input.projectFilePath) {
+    try {
+      console.log('[Share] Uploading project file...')
+      const fileData = await window.electron?.loadAudioFile(input.projectFilePath)
+      if (fileData && fileData.byteLength > 0) {
+        const fn = input.projectFilePath.split(/[\\/]/).pop() || 'project.flp'
+        const ext = fn.split('.').pop()?.toLowerCase() || 'flp'
+        const ct = ext === 'zip' ? 'application/zip' : 'application/octet-stream'
+        projectFileUrl = await uploadProjectFile(fromUserId, shareId, fn, fileData, ct)
+        projectFileName = fn
+        console.log('[Share] Project file uploaded:', projectFileUrl)
+      }
+    } catch (e: any) {
+      console.warn('[Share] Project file upload failed:', e.message)
+    }
+  }
+
+  // 4) Single INSERT with all data — no UPDATE needed!
   const { data, error } = await sb
     .from('project_shares')
     .insert({
@@ -290,13 +353,18 @@ export async function shareProject(
       audio_url: sharedVersions[0]?.fileUrl || null,
       audio_name: sharedVersions[0]?.fileName || null,
       shared_versions: sharedVersions,
+      project_file_url: projectFileUrl,
+      project_file_name: projectFileName,
+      shared_tasks: input.tasks?.length ? input.tasks : null,
+      shared_plugins: input.plugins?.length ? input.plugins : null,
+      shared_analysis: input.analysis || null,
       message: input.message || null,
     })
     .select()
     .single()
 
   if (error) throw new Error(error.message)
-  console.log(`[Share] Done! ${sharedVersions.length} versions uploaded, image: ${!!imageUrl}`)
+  console.log(`[Share] Done! ${sharedVersions.length} versions uploaded, image: ${!!imageUrl}, project file: ${!!projectFileUrl}`)
   return mapShare(data)
 }
 
@@ -477,6 +545,111 @@ export async function deleteSharedAnnotation(
   const { error } = await sb
     .from('project_shares')
     .update({ shared_versions: versions })
+    .eq('id', shareId)
+  if (error) throw new Error(error.message)
+}
+
+// ── Shared Task CRUD ────────────────────────────────────────────────────────
+
+export async function addSharedTask(
+  shareId: string,
+  task: Omit<SharedTask, 'id' | 'createdAt' | 'updatedAt'>
+): Promise<SharedTask> {
+  const sb = ensureClient()
+  const { data: share, error: fetchError } = await sb
+    .from('project_shares')
+    .select('shared_tasks')
+    .eq('id', shareId)
+    .single()
+  if (fetchError) throw new Error(fetchError.message)
+
+  const tasks: SharedTask[] = share.shared_tasks || []
+  const now = new Date().toISOString()
+  const newTask: SharedTask = {
+    id: crypto.randomUUID(),
+    order: tasks.length,
+    ...task,
+    createdAt: now,
+    updatedAt: now,
+  }
+  tasks.push(newTask)
+
+  const { error } = await sb
+    .from('project_shares')
+    .update({ shared_tasks: tasks })
+    .eq('id', shareId)
+  if (error) throw new Error(error.message)
+  return newTask
+}
+
+export async function updateSharedTask(
+  shareId: string,
+  taskId: string,
+  updates: Partial<Pick<SharedTask, 'title' | 'description' | 'status' | 'priority' | 'dueDate'>>
+): Promise<void> {
+  const sb = ensureClient()
+  const { data: share, error: fetchError } = await sb
+    .from('project_shares')
+    .select('shared_tasks')
+    .eq('id', shareId)
+    .single()
+  if (fetchError) throw new Error(fetchError.message)
+
+  const tasks: SharedTask[] = share.shared_tasks || []
+  const task = tasks.find(t => t.id === taskId)
+  if (!task) throw new Error('Task not found')
+  Object.assign(task, updates, { updatedAt: new Date().toISOString() })
+
+  const { error } = await sb
+    .from('project_shares')
+    .update({ shared_tasks: tasks })
+    .eq('id', shareId)
+  if (error) throw new Error(error.message)
+}
+
+export async function deleteSharedTask(
+  shareId: string,
+  taskId: string
+): Promise<void> {
+  const sb = ensureClient()
+  const { data: share, error: fetchError } = await sb
+    .from('project_shares')
+    .select('shared_tasks')
+    .eq('id', shareId)
+    .single()
+  if (fetchError) throw new Error(fetchError.message)
+
+  const tasks: SharedTask[] = (share.shared_tasks || []).filter((t: SharedTask) => t.id !== taskId)
+
+  const { error } = await sb
+    .from('project_shares')
+    .update({ shared_tasks: tasks })
+    .eq('id', shareId)
+  if (error) throw new Error(error.message)
+}
+
+export async function reorderSharedTasks(
+  shareId: string,
+  updates: { id: string; order: number; status: SharedTask['status'] }[]
+): Promise<void> {
+  const sb = ensureClient()
+  const { data: share, error: fetchError } = await sb
+    .from('project_shares')
+    .select('shared_tasks')
+    .eq('id', shareId)
+    .single()
+  if (fetchError) throw new Error(fetchError.message)
+
+  const tasks: SharedTask[] = share.shared_tasks || []
+  for (const u of updates) {
+    const task = tasks.find(t => t.id === u.id)
+    if (task) { task.order = u.order; task.status = u.status; task.updatedAt = new Date().toISOString() }
+  }
+  tasks.sort((a, b) => a.order - b.order)
+
+  const { error } = await sb
+    .from('project_shares')
+    .update({ shared_tasks: tasks })
     .eq('id', shareId)
   if (error) throw new Error(error.message)
 }

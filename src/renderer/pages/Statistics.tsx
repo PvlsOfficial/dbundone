@@ -24,7 +24,7 @@ import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Input } from '@/components/ui/input';
 import { Project, AppSettings, FlpAnalysis } from '@shared/types';
-import { scanSampleTree } from '@/lib/tauriApi';
+import { scanSampleTree, getAllFlpAnalysesCached, analyzeFlpProject } from '@/lib/tauriApi';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
 import './Statistics.css';
@@ -196,7 +196,7 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
     }
   }, [settings.sampleFolders]);
 
-  // ── Load FLP analyses for all FL projects ───────────────
+  // ── Load FLP analyses — fast cache first, then background re-analyze new projects ──
   const loadAnalyses = useCallback(async (force = false) => {
     const flProjects = projects.filter(p => p.dawType === 'FL Studio' && p.dawProjectPath);
     if (flProjects.length === 0) {
@@ -204,14 +204,47 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       return;
     }
 
-    setAnalysisProgress({ current: 0, total: flProjects.length });
+    if (!force) {
+      // Fast path: load everything from DB cache in one call
+      try {
+        const cached = await (window.electron?.getAllFlpAnalysesCached?.() ?? getAllFlpAnalysesCached());
+        if (cached && Object.keys(cached).length > 0) {
+          setAnalysisMap(cached as Record<string, FlpAnalysis>);
+          setIsDataReady(true);
 
+          // Background: find projects missing from cache and analyze them
+          const uncached = flProjects.filter(p => !cached[p.id]);
+          if (uncached.length > 0) {
+            setAnalysisProgress({ current: 0, total: uncached.length });
+            const updated = { ...cached } as Record<string, FlpAnalysis>;
+            for (let i = 0; i < uncached.length; i++) {
+              const p = uncached[i];
+              try {
+                const result = await (window.electron?.analyzeFlpProject?.(p.id, p.dawProjectPath!) ?? analyzeFlpProject(p.id, p.dawProjectPath!));
+                if (result) updated[p.id] = result as FlpAnalysis;
+              } catch (err) {
+                console.error(`[Statistics] Failed to analyze ${p.title}:`, err);
+              }
+              setAnalysisProgress({ current: i + 1, total: uncached.length });
+            }
+            setAnalysisMap(updated);
+            setAnalysisProgress({ current: 0, total: 0 });
+          }
+          return;
+        }
+      } catch (err) {
+        console.warn('[Statistics] Cache load failed, falling back to per-project analysis:', err);
+      }
+    }
+
+    // Full (re-)analysis path — used on first run or when forced by refresh button
+    setAnalysisProgress({ current: 0, total: flProjects.length });
     const map: Record<string, FlpAnalysis> = {};
     for (let i = 0; i < flProjects.length; i++) {
       const p = flProjects[i];
       try {
-        const result = await window.electron?.analyzeFlpProject?.(p.id, p.dawProjectPath!);
-        if (result) map[p.id] = result;
+        const result = await (window.electron?.analyzeFlpProject?.(p.id, p.dawProjectPath!) ?? analyzeFlpProject(p.id, p.dawProjectPath!));
+        if (result) map[p.id] = result as FlpAnalysis;
       } catch (err) {
         console.error(`[Statistics] Failed to analyze ${p.title}:`, err);
       }
@@ -220,6 +253,7 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
 
     setAnalysisMap(map);
     setIsDataReady(true);
+    setAnalysisProgress({ current: 0, total: 0 });
   }, [projects]);
 
   useEffect(() => { loadAnalyses(); }, [loadAnalyses]);
@@ -528,6 +562,11 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       .sort((a, b) => b.projectCount - a.projectCount || b.value - a.value)
       .slice(0, 20);
 
+    // All individual sample filenames for explorer search (including single-project samples)
+    const allSamples = Object.entries(sampleFileUsage)
+      .map(([name, d]) => ({ name, value: d.count, projectCount: d.projects.size }))
+      .sort((a, b) => b.value - a.value);
+
     // ─ Pattern stats ────────────────────────
     let totalPatterns = 0;
     for (const a of analyses) totalPatterns += a.patterns.length;
@@ -577,6 +616,7 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       avgSamplesPerProject,
       topSamplePacks,
       topSamples,
+      allSamples,
       sampleFormats,
       totalPatterns,
       avgPatternsPerProject,
@@ -721,7 +761,13 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       .filter(p => p.name.toLowerCase().includes(q))
       .slice(0, 20);
 
-    const matchedSamples = analysisStats.topSamplePacks
+    // Search all individual sample files (not just top packs)
+    const matchedSampleFiles = analysisStats.allSamples
+      .filter(p => p.name.toLowerCase().includes(q))
+      .slice(0, 30);
+
+    // Also search pack names
+    const matchedSamplePacks = analysisStats.topSamplePacks
       .filter(p => p.name.toLowerCase().includes(q))
       .slice(0, 20);
 
@@ -729,7 +775,7 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       .filter(p => p.name.toLowerCase().includes(q))
       .slice(0, 20);
 
-    return { matchedPlugins, matchedSamples, matchedMixer };
+    return { matchedPlugins, matchedSampleFiles, matchedSamplePacks, matchedMixer };
   }, [explorerQuery, analysisStats]);
 
   // ── RENDER ────────────────────────────────────────
@@ -1220,6 +1266,31 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                       </Card>
                     )}
 
+                    {/* Full sample files list */}
+                    {analysisStats.allSamples.length > 0 && (
+                      <Card>
+                        <CardHeader>
+                          <CardTitle className="text-sm font-medium">{t('stats.allSampleFiles', { count: String(analysisStats.allSamples.length) })}</CardTitle>
+                          <CardDescription>{t('stats.allSampleFilesDesc')}</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="space-y-2 max-h-80 overflow-y-auto">
+                            {analysisStats.allSamples.slice(0, 100).map((s) => (
+                              <div key={s.name} className="flex items-center justify-between text-sm py-1.5 border-b border-border/20 last:border-0">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <FileAudio className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                                  <span className="truncate font-medium">{s.name}</span>
+                                </div>
+                                <span className="text-muted-foreground tabular-nums flex-shrink-0 ml-3">
+                                  {t('stats.sampleUsage', { count: String(s.value), projects: String(s.projectCount) })}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )}
+
                     {/* Full sample packs list */}
                     {analysisStats.topSamplePacks.length > 0 && (
                       <Card>
@@ -1271,13 +1342,37 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                       </Card>
                     )}
 
-                    {explorerResults.matchedSamples.length > 0 && (
+                    {explorerResults.matchedSampleFiles.length > 0 && (
                       <Card>
                         <CardHeader>
-                          <CardTitle className="text-sm font-medium">{t('stats.samplePacksLabel', { count: String(explorerResults.matchedSamples.length) })}</CardTitle>
+                          <CardTitle className="text-sm font-medium">Sample Files ({explorerResults.matchedSampleFiles.length})</CardTitle>
+                          <CardDescription>Individual sample files matching your search</CardDescription>
                         </CardHeader>
                         <CardContent>
-                          <BarList data={explorerResults.matchedSamples.map(f => ({ name: f.name, value: f.value, color: '#22c55e' }))} max={20} />
+                          <div className="space-y-2">
+                            {explorerResults.matchedSampleFiles.map((s) => (
+                              <div key={s.name} className="flex items-center justify-between text-sm py-1.5 border-b border-border/20 last:border-0">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <FileAudio className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                                  <span className="truncate font-medium">{s.name}</span>
+                                </div>
+                                <span className="text-muted-foreground tabular-nums flex-shrink-0 ml-3">
+                                  {t('stats.sampleUsage', { count: String(s.value), projects: String(s.projectCount) })}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )}
+
+                    {explorerResults.matchedSamplePacks.length > 0 && (
+                      <Card>
+                        <CardHeader>
+                          <CardTitle className="text-sm font-medium">{t('stats.samplePacksLabel', { count: String(explorerResults.matchedSamplePacks.length) })}</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <BarList data={explorerResults.matchedSamplePacks.map(f => ({ name: f.name, value: f.value, color: '#22c55e' }))} max={20} />
                         </CardContent>
                       </Card>
                     )}
@@ -1294,7 +1389,8 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                     )}
 
                     {explorerResults.matchedPlugins.length === 0 &&
-                     explorerResults.matchedSamples.length === 0 &&
+                     explorerResults.matchedSampleFiles.length === 0 &&
+                     explorerResults.matchedSamplePacks.length === 0 &&
                      explorerResults.matchedMixer.length === 0 && (
                       <p className="text-sm text-muted-foreground py-8 text-center">
                         {t('stats.noResults', { query: explorerQuery })}

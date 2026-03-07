@@ -41,6 +41,8 @@ import {
   type CloudProfile,
   type CloudShare,
   type VersionToShare,
+  type SharedTask,
+  type SharedPluginInfo,
 } from "@/lib/sharingService"
 
 interface CollaborationPanelProps {
@@ -141,6 +143,50 @@ export const CollaborationPanel: React.FC<CollaborationPanelProps> = ({ project,
         console.warn('[Share] Could not get audio versions:', e)
       }
 
+      // Fetch project tasks
+      const sharedTasks: SharedTask[] = []
+      try {
+        const localTasks = await window.electron?.getTasks() || []
+        const projTasks = localTasks.filter((t: any) => t.projectId === project.id)
+        projTasks.forEach((t: any, i: number) => {
+          sharedTasks.push({
+            id: t.id,
+            title: t.title,
+            description: t.description || null,
+            status: t.status || 'todo',
+            priority: t.priority || null,
+            dueDate: t.dueDate || null,
+            order: t.order ?? i,
+            createdAt: t.createdAt || new Date().toISOString(),
+            updatedAt: t.updatedAt || new Date().toISOString(),
+          })
+        })
+      } catch (e) {
+        console.warn('[Share] Could not fetch tasks:', e)
+      }
+
+      // Fetch FLP analysis if available
+      const sharedPlugins: SharedPluginInfo[] = []
+      let flpAnalysis = null
+      if (project.dawType?.toLowerCase().includes('fl studio') && project.dawProjectPath) {
+        try {
+          flpAnalysis = await window.electron?.analyzeFlpProject?.(project.id, project.dawProjectPath)
+          if (flpAnalysis?.plugins) {
+            for (const p of flpAnalysis.plugins) {
+              sharedPlugins.push({
+                name: p.name || p.pluginName || '',
+                isInstrument: p.isInstrument ?? false,
+                isSampler: p.isSampler ?? false,
+                presetName: p.presetName || null,
+                dllName: p.dllName || null,
+              })
+            }
+          }
+        } catch (e) {
+          console.warn('[Share] Could not fetch FLP analysis:', e)
+        }
+      }
+
       await shareProject(user.id, profile?.displayName || user.email || 'Unknown', {
         toUserId: selectedUser.id,
         projectLocalId: project.id,
@@ -159,6 +205,9 @@ export const CollaborationPanel: React.FC<CollaborationPanelProps> = ({ project,
         permission: sharePermission,
         imagePath: project.artworkPath,
         versions,
+        tasks: sharedTasks.length ? sharedTasks : undefined,
+        plugins: sharedPlugins.length ? sharedPlugins : undefined,
+        analysis: flpAnalysis || undefined,
         message: shareMessage.trim() || undefined,
       })
       setShowShareDialog(false)

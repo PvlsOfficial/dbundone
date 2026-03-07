@@ -167,14 +167,14 @@ export const AppTour: React.FC<AppTourProps> = ({ isOpen, onClose, onComplete, c
       expectedPage: "groups",
       page: "project-detail",
     },
-    // 10: New Collection button highlight (auto)
+    // 10: New Collection button — click it to proceed
     {
       target: "[data-tour-new-collection]",
       title: t("tour.newCollection.title"),
       description: t("tour.newCollection.desc"),
       icon: <FolderOpen className="w-5 h-5" />,
       position: "bottom",
-      action: "auto",
+      action: "click-element",
       page: "groups",
     },
     // 11: Kanban — click to navigate

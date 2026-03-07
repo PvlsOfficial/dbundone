@@ -392,6 +392,7 @@ pub fn run() {
             commands::get_audio_analysis,
             // FLP Analysis (extended)
             commands::analyze_flp_project,
+            commands::get_all_flp_analyses_cached,
             commands::clear_flp_analysis_cache,
             // User Profile
             commands::get_user_profile,

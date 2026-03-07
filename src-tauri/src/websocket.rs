@@ -70,9 +70,19 @@ pub enum PluginMessage {
     /// Delete a task
     #[serde(rename = "deleteTask")]
     DeleteTask { task_id: String },
-    /// DAW transport info (BPM, time signature, etc.)
+    /// DAW transport info (BPM, time signature, playhead position)
     #[serde(rename = "transportInfo")]
-    TransportInfo { bpm: Option<f64>, time_sig_num: Option<i32>, time_sig_denom: Option<i32> },
+    TransportInfo {
+        bpm: Option<f64>,
+        time_sig_num: Option<i32>,
+        time_sig_denom: Option<i32>,
+        /// Current playhead position in seconds. Used to detect loop-back (recording should stop).
+        #[serde(default)]
+        position_secs: Option<f64>,
+        /// Whether the DAW is currently playing/running
+        #[serde(default)]
+        is_playing: Option<bool>,
+    },
 }
 
 /// Messages sent FROM the server TO the VST3 plugin
@@ -151,6 +161,9 @@ pub struct PluginSession {
     pub auto_record: bool,
     pub capture_offline_renders: bool,
     pub connected_at: String,
+    /// Last known playhead position in seconds (for loop-back detection)
+    #[serde(default)]
+    pub last_playhead_secs: Option<f64>,
 }
 
 pub struct PluginServerState {
@@ -598,6 +611,7 @@ async fn handle_connection(state: Arc<PluginServerState>, stream: TcpStream, add
         auto_record: false,
         capture_offline_renders: false,
         connected_at: chrono::Utc::now().to_rfc3339(),
+        last_playhead_secs: None,
     };
     state.register_session(session, msg_tx.clone()).await;
 
@@ -804,9 +818,58 @@ async fn handle_plugin_message(
             });
         }
 
-        PluginMessage::TransportInfo { bpm, time_sig_num: _, time_sig_denom: _ } => {
-            // Update the project BPM from DAW transport if it's a reasonable value
-            if let Some(daw_bpm) = bpm {
+        PluginMessage::TransportInfo { bpm, position_secs, is_playing, .. } => {
+            // Detect playhead loop-back while recording: position jumps back to near 0
+            // while the session was at a meaningfully later position.
+            // When detected, stop the recording so the plugin finalises the current take.
+            if let Some(pos) = position_secs {
+                let (is_rec, prev_pos, project_id) = {
+                    let sessions = state.sessions.read().await;
+                    if let Some(s) = sessions.get(session_id) {
+                        (s.is_recording, s.last_playhead_secs, s.linked_project_id.clone())
+                    } else {
+                        (false, None, None)
+                    }
+                };
+
+                // Record the new position
+                {
+                    let mut sessions = state.sessions.write().await;
+                    if let Some(s) = sessions.get_mut(session_id) {
+                        s.last_playhead_secs = Some(pos);
+                    }
+                }
+
+                // If recording and the playhead jumped back to near 0 from > 2 s
+                let playback_running = is_playing.unwrap_or(true);
+                if is_rec && playback_running {
+                    let looped_back = prev_pos
+                        .map(|prev| prev > 2.0 && pos < 0.5)
+                        .unwrap_or(false);
+                    if looped_back {
+                        log::info!(
+                            "[Plugin] Playhead looped back ({:.2}s -> {:.2}s) while recording — stopping session {}",
+                            prev_pos.unwrap_or(0.0), pos, session_id
+                        );
+                        // Send StopRecording so the plugin finalises the current take
+                        let _ = state.send_to_session(session_id, ServerMessage::StopRecording).await;
+                    }
+                }
+
+                // Also emit BPM update if provided
+                if let Some(daw_bpm) = bpm {
+                    if daw_bpm > 20.0 && daw_bpm < 999.0 {
+                        if let Some(pid) = project_id {
+                            let _ = state.event_tx.send(PluginEvent::PluginTransportBpm {
+                                session_id: session_id.to_string(),
+                                project_id: pid,
+                                bpm: daw_bpm,
+                            });
+                        }
+                    }
+                }
+            } else if let Some(daw_bpm) = bpm {
+                // No position data — still handle BPM update
                 if daw_bpm > 20.0 && daw_bpm < 999.0 {
                     let project_id = {
                         let sessions = state.sessions.read().await;

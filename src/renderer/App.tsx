@@ -1222,8 +1222,10 @@ function App() {
     const loadSettings = async () => {
       if (isElectron()) {
         try {
-          const loadedSettings = await window.electron?.getSettings()
-          if (loadedSettings) {
+          const rawSettings = await window.electron?.getSettings()
+          if (rawSettings) {
+            // Always merge with DEFAULT_SETTINGS so new fields (e.g. hasSeenTour) have their default
+            const loadedSettings: AppSettings = { ...DEFAULT_SETTINGS, ...rawSettings }
             // Migrate legacy formats into dawFolders arrays
             if (loadedSettings.dawFolders) {
               const migrated = { ...loadedSettings.dawFolders }
