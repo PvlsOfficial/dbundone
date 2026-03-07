@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>Offline-first desktop app for organising, analysing, and sharing music production projects.</strong><br />
+  <strong>dbdone-inspired Offline-first desktop app for organising, analysing, and sharing music production projects.</strong><br />
   Built with <a href="https://v2.tauri.app">Tauri v2</a>, React 18, and Rust.
 </p>
 
@@ -19,6 +19,8 @@
   <a href="#contributing">Contributing</a> ·
   <a href="#license">License</a>
 </p>
+
+[![Ko-fi](https://img.shields.io/badge/Support%20on-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/pvlsofficial)
 
 ---
 
@@ -41,7 +43,7 @@
 
 ## Screenshots
 
-> Add screenshots to `assets/` and reference them here.
+> no screenshots yet.
 
 ## Quickstart
 
@@ -143,32 +145,6 @@ cargo xtask bundle dbundone-bridge --release
 
 Copy the resulting files to your system's plugin folder.
 
-## Website
-
-The `website/` directory is a **Next.js 16** marketing site with pages for landing, docs, blog, changelog, pricing, privacy, terms, and downloads.
-
-### Local Development
-
-```bash
-cd website
-npm install
-npm run dev       # http://localhost:3000
-```
-
-### Deployment
-
-The site is designed for deployment on **Vercel** (or any platform supporting Next.js App Router). Required environment variables:
-
-| Variable | Description |
-|----------|-------------|
-| `STRIPE_SECRET_KEY` | Stripe secret key (server-side only) |
-| `STRIPE_PRICE_PRO` | Stripe Price ID for the Pro tier |
-| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
-
-> A `.env.example` is provided in the `website/` directory.
-
-## Environment Variables
-
 ### Main App
 
 The desktop app embeds a **Supabase anon/publishable key** in `src/renderer/lib/supabase.ts` — this is safe for client-side use (protected by Row Level Security). No `.env` file is required for the desktop app to function.
@@ -196,6 +172,12 @@ For cloud sharing features, see `supabase-schema.sql` for the required Supabase 
 | `Space` | Play / Pause audio preview |
 | `Escape` | Close modal |
 | `Ctrl+K` | Focus search |
+
+## Support
+
+If you find this useful, consider buying me a coffee!
+
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/pvlsofficial)
 
 ## Contributing
 
