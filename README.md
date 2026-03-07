@@ -143,32 +143,6 @@ cargo xtask bundle dbundone-bridge --release
 
 Copy the resulting files to your system's plugin folder.
 
-## Website
-
-The `website/` directory is a **Next.js 16** marketing site with pages for landing, docs, blog, changelog, pricing, privacy, terms, and downloads.
-
-### Local Development
-
-```bash
-cd website
-npm install
-npm run dev       # http://localhost:3000
-```
-
-### Deployment
-
-The site is designed for deployment on **Vercel** (or any platform supporting Next.js App Router). Required environment variables:
-
-| Variable | Description |
-|----------|-------------|
-| `STRIPE_SECRET_KEY` | Stripe secret key (server-side only) |
-| `STRIPE_PRICE_PRO` | Stripe Price ID for the Pro tier |
-| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
-
-> A `.env.example` is provided in the `website/` directory.
-
-## Environment Variables
-
 ### Main App
 
 The desktop app embeds a **Supabase anon/publishable key** in `src/renderer/lib/supabase.ts` — this is safe for client-side use (protected by Row Level Security). No `.env` file is required for the desktop app to function.
