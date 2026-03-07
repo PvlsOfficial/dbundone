@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>Offline-first desktop app for organising, analysing, and sharing music production projects.</strong><br />
+  <strong>dbdone-inspired Offline-first desktop app for organising, analysing, and sharing music production projects.</strong><br />
   Built with <a href="https://v2.tauri.app">Tauri v2</a>, React 18, and Rust.
 </p>
 
