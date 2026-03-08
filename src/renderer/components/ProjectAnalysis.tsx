@@ -188,15 +188,15 @@ export const ProjectAnalysis: React.FC<ProjectAnalysisProps> = ({
     <div className="flex flex-col gap-4">
       {/* Header with version info & refresh */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Puzzle className="w-4 h-4 text-primary" />
-          <span className="text-sm font-medium">Project Analysis</span>
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Puzzle className="w-5 h-5 text-primary" />
+          Project Analysis
           {analysis.flVersion && (
             <Badge variant="secondary" className="text-xs">
               FL Studio {analysis.flVersion}
             </Badge>
           )}
-        </div>
+        </h2>
         <Button variant="ghost" size="sm" onClick={() => loadAnalysis(true)} className="h-7">
           <RefreshCw className="w-3.5 h-3.5 mr-1" />
           Refresh

@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback } from "react"
-import { motion, AnimatePresence } from "framer-motion"
 import {
   Plug,
   Unplug,
@@ -10,8 +9,6 @@ import {
   Mic,
   MicOff,
   Square,
-  ChevronDown,
-  ChevronUp,
   Loader2,
   Music,
   Headphones,
@@ -25,8 +22,6 @@ import {
   TooltipContent,
   TooltipTrigger,
   TooltipProvider,
-  ScrollArea,
-  Separator,
   Select,
   SelectContent,
   SelectItem,
@@ -66,7 +61,6 @@ export const PluginStatus: React.FC<PluginStatusProps> = ({
   onToggleOfflineCapture,
   compact = false,
 }) => {
-  const [isExpanded, setIsExpanded] = useState(true)
   const [linkingSession, setLinkingSession] = useState<string | null>(null)
 
   // Sessions linked to the current project
@@ -115,100 +109,54 @@ export const PluginStatus: React.FC<PluginStatusProps> = ({
   }
 
   return (
-    <div className="rounded-xl border border-border/30 bg-card/50 overflow-hidden">
+    <div className="space-y-4">
       {/* Header */}
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center justify-between p-3 hover:bg-muted/30 transition-colors"
-      >
-        <div className="flex items-center gap-3">
-          <div className={cn(
-            "p-1.5 rounded-lg",
-            connectedCount > 0
-              ? "bg-green-500/15 text-green-500"
-              : "bg-muted text-muted-foreground"
-          )}>
-            {connectedCount > 0 ? (
-              <Plug className="w-4 h-4" />
-            ) : (
-              <Unplug className="w-4 h-4" />
-            )}
-          </div>
-          <div className="text-left">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">VST3 Plugin Bridge</span>
-              {connectedCount > 0 && (
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    "text-[10px] px-1.5 py-0",
-                    isRecording
-                      ? "border-red-500/40 text-red-400 bg-red-500/10"
-                      : "border-green-500/40 text-green-400 bg-green-500/10"
-                  )}
-                >
-                  {isRecording ? (
-                    <><Circle className="w-2 h-2 fill-red-500 text-red-500 mr-1 animate-pulse" /> REC</>
-                  ) : (
-                    <>{connectedCount} connected</>
-                  )}
-                </Badge>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Plug className="w-5 h-5 text-primary" />
+          VST Plugin Bridge
+          {connectedCount > 0 && (
+            <Badge
+              variant="outline"
+              className={cn(
+                "text-[10px] px-1.5 py-0",
+                isRecording
+                  ? "border-red-500/40 text-red-400 bg-red-500/10"
+                  : "border-green-500/40 text-green-400 bg-green-500/10"
               )}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {connectedCount === 0
-                ? "No plugins connected"
-                : linkedCount > 0
-                  ? linkedSessions.map(s => {
-                      const daw = s.dawName && s.dawName !== "Unknown DAW" && s.dawName !== "Unknown" ? s.dawName : null
-                      return daw || s.pluginName
-                    }).join(", ") + ` · linked`
-                  : `${connectedCount} plugin${connectedCount !== 1 ? "s" : ""} available`
-              }
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {isRecording && (
-            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-500/10 border border-red-500/20">
-              <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-              <span className="text-[10px] font-medium text-red-400">RECORDING</span>
-            </div>
-          )}
-          {isExpanded ? (
-            <ChevronUp className="w-4 h-4 text-muted-foreground" />
-          ) : (
-            <ChevronDown className="w-4 h-4 text-muted-foreground" />
-          )}
-        </div>
-      </button>
-
-      {/* Expanded content */}
-      <AnimatePresence>
-        {isExpanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden"
-          >
-            <Separator />
-            <div className="p-3 space-y-3">
-              {connectedCount === 0 ? (
-                <div className="text-center py-6">
-                  <Unplug className="w-8 h-8 mx-auto text-muted-foreground/50 mb-2" />
-                  <p className="text-sm text-muted-foreground">No VST3 plugins connected</p>
-                  <p className="text-xs text-muted-foreground/70 mt-1">
-                    Load the DBundone VST3 plugin in your DAW to connect
-                  </p>
-                  <div className="mt-3 p-2 rounded-lg bg-muted/30 border border-border/20">
-                    <p className="text-[10px] font-mono text-muted-foreground">
-                      Plugin server running on port 9847
-                    </p>
-                  </div>
-                </div>
+            >
+              {isRecording ? (
+                <><Circle className="w-2 h-2 fill-red-500 text-red-500 mr-1 animate-pulse" /> REC</>
               ) : (
+                <>{connectedCount} connected</>
+              )}
+            </Badge>
+          )}
+        </h2>
+        {isRecording && (
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-500/10 border border-red-500/20">
+            <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+            <span className="text-[10px] font-medium text-red-400">RECORDING</span>
+          </div>
+        )}
+      </div>
+
+      {/* Content */}
+      <div className="space-y-3">
+        {connectedCount === 0 ? (
+          <div className="text-center py-8 rounded-xl border border-border/30 bg-card/50">
+            <Unplug className="w-8 h-8 mx-auto text-muted-foreground/50 mb-2" />
+            <p className="text-sm text-muted-foreground">No VST3 plugins connected</p>
+            <p className="text-xs text-muted-foreground/70 mt-1">
+              Load the DBundone VST3 plugin in your DAW to connect
+            </p>
+            <div className="mt-3 inline-block p-2 rounded-lg bg-muted/30 border border-border/20">
+              <p className="text-[10px] font-mono text-muted-foreground">
+                Plugin server running on port 9847
+              </p>
+            </div>
+          </div>
+        ) : (
                 <>
                   {/* Linked sessions */}
                   {linkedSessions.length > 0 && (
@@ -314,11 +262,8 @@ export const PluginStatus: React.FC<PluginStatusProps> = ({
                     </div>
                   )}
                 </>
-              )}
-            </div>
-          </motion.div>
         )}
-      </AnimatePresence>
+      </div>
     </div>
   )
 }
@@ -449,22 +394,6 @@ export const PluginStatusIcon: React.FC<{
   // Persistent flag from database: project was linked to the plugin at some point
   const wasLinkedBefore = !hasLinked && !hasLastLinked && !!pluginLinked
 
-  // Don't render anything if no sessions at all and no memory of linking and never linked
-  if (!hasAvailable && !hasLastLinked && !wasLinkedBefore) return null
-
-  // Determine color: red=recording, green=linked, blue=previously linked, indigo=remembered, yellow=available, gray=none
-  const color = isRecording
-    ? "bg-red-500"
-    : hasLinked
-      ? "bg-green-500"
-      : hasLastLinked
-        ? "bg-indigo-400"
-        : wasLinkedBefore
-          ? "bg-violet-400"
-          : hasAvailable
-            ? "bg-yellow-500"
-            : "bg-muted-foreground/30"
-
   const label = isRecording
     ? `Recording (${linkedSessions.filter(s => s.isRecording).length})`
     : hasLinked
@@ -472,10 +401,10 @@ export const PluginStatusIcon: React.FC<{
       : hasLastLinked
         ? "Previously linked via plugin"
         : wasLinkedBefore
-          ? "Plugin-linked project"
+          ? "Previously connected to VST bridge — will auto-reconnect when opened in DAW"
           : hasAvailable
-            ? `${sessions.length} plugin${sessions.length !== 1 ? "s" : ""} available`
-            : "No plugins connected"
+            ? `${sessions.length} plugin${sessions.length !== 1 ? "s" : ""} available, not linked`
+            : "Not connected to VST bridge"
 
   return (
     <TooltipProvider>
@@ -486,8 +415,7 @@ export const PluginStatusIcon: React.FC<{
               <>
                 <div className={cn(
                   "w-2 h-2 rounded-full flex-shrink-0 transition-colors",
-                  color,
-                  isRecording && "animate-pulse"
+                  isRecording ? "bg-red-500 animate-pulse" : "bg-green-500"
                 )} />
                 <Plug className={cn(
                   "w-3.5 h-3.5",
@@ -498,7 +426,9 @@ export const PluginStatusIcon: React.FC<{
               <Plug className="w-3.5 h-3.5 text-indigo-400/60" />
             ) : wasLinkedBefore ? (
               <Plug className="w-3.5 h-3.5 text-violet-400/50" />
-            ) : null}
+            ) : (
+              <Unplug className="w-3.5 h-3.5 text-muted-foreground/25" />
+            )}
           </div>
         </TooltipTrigger>
         <TooltipContent side="bottom" className="text-xs">

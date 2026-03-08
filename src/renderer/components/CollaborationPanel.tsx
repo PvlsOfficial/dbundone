@@ -246,16 +246,11 @@ export const CollaborationPanel: React.FC<CollaborationPanelProps> = ({ project,
   // Not signed in — show auth card
   if (!isAuthenticated) {
     return (
-      <div className="flex flex-col gap-5 max-w-2xl">
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <Users className="w-5 h-5 text-primary" />
-            <h2 className="text-lg font-semibold">Sharing & Collaboration</h2>
-          </div>
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            Share projects with other producers. Search by email, send shares, and collaborate in real-time.
-          </p>
-        </div>
+      <div className="flex flex-col gap-5">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Users className="w-5 h-5 text-primary" />
+          Sharing & Collaboration
+        </h2>
         <AuthCard />
       </div>
     )
@@ -264,15 +259,10 @@ export const CollaborationPanel: React.FC<CollaborationPanelProps> = ({ project,
   return (
     <div className="flex flex-col gap-5 max-w-2xl">
       {/* Header */}
-      <div>
-        <div className="flex items-center gap-2 mb-2">
-          <Users className="w-5 h-5 text-primary" />
-          <h2 className="text-lg font-semibold">Sharing & Collaboration</h2>
-        </div>
-        <p className="text-sm text-muted-foreground leading-relaxed">
-          Share this project with other <strong>dbundone</strong> users. Search by email and send them your project details.
-        </p>
-      </div>
+      <h2 className="text-lg font-semibold flex items-center gap-2">
+        <Users className="w-5 h-5 text-primary" />
+        Sharing & Collaboration
+      </h2>
 
       {/* Signed in as */}
       <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/30 rounded-lg px-3 py-2">

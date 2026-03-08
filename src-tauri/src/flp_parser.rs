@@ -399,7 +399,16 @@ pub fn parse_flp_from_bytes(data: &[u8], label: &str) -> Result<FlpMetadata, Str
     }
 
     let bpm = if let Some(t) = tempo_main {
-        Some(t as f64 / 1000.0)
+        let candidate = t as f64 / 1000.0;
+        // FL Studio BPM range is 10–999. Reject bogus values that come from
+        // misaligned event parsing (e.g. Detective_.flp-style files where the
+        // 0x9c byte appears in a wrong context and the 4 payload bytes encode
+        // something that is not tempo).
+        if candidate >= 10.0 && candidate <= 999.0 {
+            Some(candidate)
+        } else {
+            None // fall through to coarse/fine or raw-scan fallback
+        }
     } else {
         // Fallback to legacy coarse + fine
         let mut bpm_val: Option<f64> = None;

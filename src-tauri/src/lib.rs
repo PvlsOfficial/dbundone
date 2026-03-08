@@ -105,6 +105,36 @@ pub fn run() {
                         Ok(ref event) => {
                             // Handle events that need server-side DB access
                             match event {
+                                websocket::PluginEvent::PluginConnected { session } => {
+                                    // If the plugin has no remembered project, check our own DB mapping.
+                                    // This handles fresh plugin instances that were added to a DAW project
+                                    // after the plugin state was lost (e.g. removed and re-added).
+                                    if session.last_project_id.is_none() {
+                                        let stored_project_id = {
+                                            let db = app_handle.state::<commands::DbState>();
+                                            let database = db.0.lock().unwrap();
+                                            database.get_plugin_project(&session.plugin_id).ok().flatten()
+                                        };
+                                        if let Some(ref project_id) = stored_project_id {
+                                            let project = {
+                                                let db = app_handle.state::<commands::DbState>();
+                                                let database = db.0.lock().unwrap();
+                                                database.get_project(project_id).ok().flatten()
+                                            };
+                                            if let Some(p) = project {
+                                                let info = websocket::ProjectInfo {
+                                                    id: p.id.clone(), title: p.title, status: p.status,
+                                                    bpm: p.bpm, musical_key: p.musical_key,
+                                                    artwork_path: p.artwork_path, daw_type: p.daw_type,
+                                                    collection_name: p.collection_name,
+                                                };
+                                                let _ = plugin_state_clone.link_session_to_project(
+                                                    &session.session_id, project_id, info,
+                                                ).await;
+                                            }
+                                        }
+                                    }
+                                }
                                 websocket::PluginEvent::PluginRequestedProjects { session_id } => {
                                     let projects = {
                                         let db = app_handle.state::<commands::DbState>();
@@ -131,11 +161,24 @@ pub fn run() {
                                         database.get_project(project_id).ok().flatten()
                                     };
                                     if let Some(p) = project {
-                                        // Persistently mark this project as plugin-linked
-                                        if !p.plugin_linked {
+                                        // Get plugin_id from session for instance mapping
+                                        let plugin_id = {
+                                            let sessions = plugin_state_clone.get_sessions().await;
+                                            sessions.iter()
+                                                .find(|s| &s.session_id == session_id)
+                                                .map(|s| s.plugin_id.clone())
+                                        };
+                                        {
                                             let db = app_handle.state::<commands::DbState>();
                                             let database = db.0.lock().unwrap();
-                                            let _ = database.update_project(project_id, &serde_json::json!({ "pluginLinked": true }));
+                                            // Mark project as plugin-linked
+                                            if !p.plugin_linked {
+                                                let _ = database.update_project(project_id, &serde_json::json!({ "pluginLinked": true }));
+                                            }
+                                            // Persist plugin instance → project mapping
+                                            if let Some(ref pid) = plugin_id {
+                                                let _ = database.save_plugin_link(pid, project_id);
+                                            }
                                         }
                                         let info = websocket::ProjectInfo {
                                             id: p.id.clone(), title: p.title, status: p.status,
@@ -401,6 +444,10 @@ pub fn run() {
             commands::create_project_share,
             commands::get_project_shares,
             commands::delete_project_share,
+            // Distribution Links
+            commands::get_distribution_links,
+            commands::create_distribution_link,
+            commands::delete_distribution_link,
             // Onboarding
             commands::get_onboarding_state,
             commands::update_onboarding_state,

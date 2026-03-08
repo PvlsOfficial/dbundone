@@ -156,7 +156,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const profile = await fetchProfile(data.user.id)
         patch({ isAuthenticated: true, user: data.user, session: data.session, profile })
       } else if (data.user && !data.session) {
-        patch({ error: 'Account created! Check your email for the confirmation link before signing in.' })
+        // Email confirmation required — AuthCard shows its own success message,
+        // so don't set error here (it would show as a red banner).
       }
     } catch (e: any) {
       console.error('[Auth] signUp error:', e)

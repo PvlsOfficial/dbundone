@@ -229,6 +229,9 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
                   })
                 }
               }
+            } else if (pluginEvent.type === "pluginLinkedProject") {
+              // A project was just linked — refresh so pluginLinked flag shows on cards
+              refreshData()
             } else if (pluginEvent.type === "pluginRecordingComplete") {
               // Auto-import the recording as an audio version
               console.log("[Plugin] Recording complete, importing:", pluginEvent)

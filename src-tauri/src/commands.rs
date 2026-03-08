@@ -930,13 +930,18 @@ pub async fn scan_fl_folder(
     })).ok();
 
     let flp_files = scanner::scan_for_flp_files(&folder_path, 10);
-    let zip_files = scanner::scan_for_zip_files_with_flp(&folder_path, 10);
+    let zip_files_raw = scanner::scan_for_zip_files_with_flp(&folder_path, 10);
 
-    // Phase 2: Filter autosaves
+    // Phase 2: Filter autosaves (apply to both FLP and ZIP files)
     let filtered_files = if exclude_autosaves {
         scanner::filter_autosaves(&flp_files, "flp")
     } else {
         flp_files
+    };
+    let zip_files = if exclude_autosaves {
+        scanner::filter_autosaves(&zip_files_raw, "zip")
+    } else {
+        zip_files_raw
     };
 
     if filtered_files.is_empty() && zip_files.is_empty() {
@@ -1095,8 +1100,53 @@ pub async fn scan_fl_folder(
                 "updatedAt": file_modified.as_deref().unwrap_or(&chrono::Utc::now().to_rfc3339()),
             });
 
-            let _ = database.create_project(&project_data);
-            added_count += 1;
+            if let Ok(created_project) = database.create_project(&project_data) {
+                added_count += 1;
+                // Auto-add audio exports from the same folder as versions
+                if let Some(parent_dir) = std::path::Path::new(&flp_path).parent() {
+                    let audio_exts = ["wav", "mp3", "flac", "ogg", "aiff", "aif", "m4a", "opus", "wma"];
+                    let mut audio_files: Vec<(std::path::PathBuf, std::time::SystemTime)> = std::fs::read_dir(parent_dir)
+                        .ok()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|e| e.ok())
+                        .filter(|e| {
+                            let p = e.path();
+                            p.is_file() && p.extension()
+                                .and_then(|x| x.to_str())
+                                .map(|x| audio_exts.contains(&x.to_lowercase().as_str()))
+                                .unwrap_or(false)
+                        })
+                        .filter_map(|e| {
+                            let p = e.path();
+                            let mtime = e.metadata().ok()?.modified().ok()?;
+                            Some((p, mtime))
+                        })
+                        .collect();
+                    audio_files.sort_by_key(|(_, mtime)| *mtime);
+                    let mut last_version_id: Option<String> = None;
+                    for (audio_path, _) in &audio_files {
+                        let stem = audio_path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("Export")
+                            .to_string();
+                        let version_data = serde_json::json!({
+                            "projectId": created_project.id,
+                            "name": stem,
+                            "filePath": audio_path.to_string_lossy().to_string(),
+                            "source": "export",
+                        });
+                        if let Ok(v) = database.create_version(&version_data) {
+                            last_version_id = Some(v.id);
+                        }
+                    }
+                    if let Some(fav_id) = last_version_id {
+                        let _ = database.update_project(&created_project.id, &serde_json::json!({
+                            "favoriteVersionId": fav_id
+                        }));
+                    }
+                }
+            }
         }
     }
 
@@ -2154,6 +2204,26 @@ pub async fn link_plugin_to_project(
 
     let project = project.ok_or_else(|| format!("Project {} not found", project_id))?;
 
+    // Get plugin_id from the live session for instance→project mapping
+    let plugin_id = {
+        let sessions = plugin_server.0.get_sessions().await;
+        sessions.iter()
+            .find(|s| s.session_id == session_id)
+            .map(|s| s.plugin_id.clone())
+    };
+
+    {
+        let database = db.0.lock().map_err(|e| e.to_string())?;
+        // Mark project as plugin-linked so the indicator shows even when offline
+        if !project.plugin_linked {
+            let _ = database.update_project(&project_id, &serde_json::json!({ "pluginLinked": true }));
+        }
+        // Persist plugin instance → project for fresh-instance auto-relink
+        if let Some(ref pid) = plugin_id {
+            let _ = database.save_plugin_link(pid, &project_id);
+        }
+    }
+
     let project_info = crate::websocket::ProjectInfo {
         id: project.id,
         title: project.title,
@@ -2619,8 +2689,21 @@ pub fn analyze_flp_project(
     }
     drop(database);
 
-    // Run analysis
-    let analysis = crate::flp_parser::analyze_flp(&file_path)?;
+    // Run analysis — handle both plain .flp and .zip containing an .flp
+    let is_zip = std::path::Path::new(&file_path)
+        .extension()
+        .map(|e| e.to_ascii_lowercase() == "zip")
+        .unwrap_or(false);
+
+    let analysis = if is_zip {
+        let entries = scanner::extract_flps_from_zip(&file_path);
+        let entry = entries.into_iter().next()
+            .ok_or_else(|| format!("No FLP found inside zip: {}", file_path))?;
+        let label = format!("{}#{}", file_path, entry.flp_name);
+        crate::flp_parser::analyze_flp_from_bytes(&entry.flp_data, &label)?
+    } else {
+        crate::flp_parser::analyze_flp(&file_path)?
+    };
     let json = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
     let json_str = serde_json::to_string(&analysis).map_err(|e| e.to_string())?;
 
@@ -2724,6 +2807,38 @@ pub fn delete_project_share(
 ) -> Result<bool, String> {
     let database = db.0.lock().map_err(|e| e.to_string())?;
     database.delete_share(&id)
+}
+
+// ============ DISTRIBUTION LINKS ============
+
+#[tauri::command]
+pub fn get_distribution_links(
+    db: State<DbState>,
+    project_id: String,
+) -> Result<Vec<crate::database::DistributionLink>, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.get_distribution_links(&project_id)
+}
+
+#[tauri::command]
+pub fn create_distribution_link(
+    db: State<DbState>,
+    project_id: String,
+    platform: String,
+    url: String,
+    label: Option<String>,
+) -> Result<crate::database::DistributionLink, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.create_distribution_link(&project_id, &platform, &url, label.as_deref())
+}
+
+#[tauri::command]
+pub fn delete_distribution_link(
+    db: State<DbState>,
+    id: String,
+) -> Result<bool, String> {
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    database.delete_distribution_link(&id)
 }
 
 // ============ ONBOARDING ============

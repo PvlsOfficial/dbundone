@@ -1,4 +1,4 @@
-import { Project, ProjectGroup, Task, Tag, AppSettings, AudioVersion, Annotation, ArtworkHistoryEntry, PluginSession, PluginEvent, FlpAnalysis, UserProfile, ProjectShare, OnboardingState } from '@shared/types';
+import { Project, ProjectGroup, Task, Tag, AppSettings, AudioVersion, Annotation, ArtworkHistoryEntry, PluginSession, PluginEvent, FlpAnalysis, UserProfile, ProjectShare, OnboardingState, DistributionLink } from '@shared/types';
 
 declare global {
   interface Window {
@@ -141,6 +141,11 @@ declare global {
       createProjectShare: (projectId: string, sharedWithName: string, permission: string) => Promise<ProjectShare>;
       getProjectShares: (projectId: string) => Promise<ProjectShare[]>;
       deleteProjectShare: (shareId: string) => Promise<void>;
+
+      // Distribution Links
+      getDistributionLinks: (projectId: string) => Promise<DistributionLink[]>;
+      createDistributionLink: (projectId: string, platform: string, url: string, label?: string) => Promise<DistributionLink>;
+      deleteDistributionLink: (id: string) => Promise<boolean>;
 
       // Onboarding
       getOnboardingState: () => Promise<OnboardingState | null>;

@@ -400,13 +400,13 @@ export const ProjectKanban: React.FC<ProjectKanbanProps> = ({
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <ListTodo className="w-4 h-4 text-primary" />
-          <span className="text-sm font-medium">Project Tasks</span>
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <ListTodo className="w-5 h-5 text-primary" />
+          Tasks
           <Badge variant="secondary" className="text-xs">
             {projectTasks.length + taskAnnotations.length}
           </Badge>
-        </div>
+        </h2>
       </div>
 
       {/* Kanban columns */}

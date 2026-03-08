@@ -18,6 +18,7 @@ import type {
   UserProfile,
   ProjectShare,
   OnboardingState,
+  DistributionLink,
 } from "@shared/types";
 
 // ============ Projects ============
@@ -468,6 +469,21 @@ export const deleteProjectShare = (
 ): Promise<boolean> =>
   invoke("delete_project_share", { id });
 
+// ============ Distribution Links ============
+export const getDistributionLinks = (projectId: string): Promise<DistributionLink[]> =>
+  invoke("get_distribution_links", { projectId });
+
+export const createDistributionLink = (
+  projectId: string,
+  platform: string,
+  url: string,
+  label?: string
+): Promise<DistributionLink> =>
+  invoke("create_distribution_link", { projectId, platform, url, label });
+
+export const deleteDistributionLink = (id: string): Promise<boolean> =>
+  invoke("delete_distribution_link", { id });
+
 // ============ Onboarding ============
 export const getOnboardingState = (): Promise<OnboardingState> =>
   invoke("get_onboarding_state");
@@ -670,6 +686,11 @@ export const electronCompat = {
   createProjectShare,
   getProjectShares,
   deleteProjectShare,
+
+  // Distribution Links
+  getDistributionLinks,
+  createDistributionLink,
+  deleteDistributionLink,
 
   // Onboarding
   getOnboardingState,

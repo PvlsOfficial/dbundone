@@ -28,7 +28,7 @@ export interface Project {
 }
 
 // Audio version source types
-export type AudioVersionSource = "manual" | "auto" | "offline"
+export type AudioVersionSource = "manual" | "auto" | "offline" | "export"
 
 // Audio Version for version control
 export interface AudioVersion {
@@ -352,6 +352,17 @@ export interface FlpAnalysis {
   mixerTracks: FlpMixerTrack[]
   patterns: FlpPattern[]
   flVersion: string | null
+}
+
+// ── Distribution Links ───────────────────────────────────────────────────────
+
+export interface DistributionLink {
+  id: string
+  projectId: string
+  platform: string
+  url: string
+  label: string | null
+  createdAt: string
 }
 
 // ── User Profile ────────────────────────────────────────────────────────────

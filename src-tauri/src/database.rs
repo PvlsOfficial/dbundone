@@ -292,6 +292,29 @@ impl Database {
             INSERT OR IGNORE INTO onboarding_state (id, created_at) VALUES ('default', datetime('now'));"
         );
 
+        // Distribution links
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS project_distribution_links (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                url TEXT NOT NULL,
+                label TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_dist_links_project ON project_distribution_links(project_id);"
+        );
+
+        // Plugin instance → project persistent mapping (survives plugin state loss)
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plugin_instance_links (
+                plugin_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                linked_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );"
+        );
+
         // FLP analysis cache
         let _ = conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS flp_analysis_cache (
@@ -1694,6 +1717,98 @@ impl Database {
         }
         Ok(annotations)
     }
+
+    // ---- Distribution Links ----
+
+    pub fn get_distribution_links(&self, project_id: &str) -> Result<Vec<DistributionLink>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, project_id, platform, url, label, created_at FROM project_distribution_links WHERE project_id = ? ORDER BY created_at ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                Ok(DistributionLink {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    platform: row.get(2)?,
+                    url: row.get(3)?,
+                    label: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut links = Vec::new();
+        for row in rows {
+            match row {
+                Ok(l) => links.push(l),
+                Err(e) => log::error!("Error mapping distribution link row: {}", e),
+            }
+        }
+        Ok(links)
+    }
+
+    pub fn create_distribution_link(
+        &self,
+        project_id: &str,
+        platform: &str,
+        url: &str,
+        label: Option<&str>,
+    ) -> Result<DistributionLink, String> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO project_distribution_links (id, project_id, platform, url, label, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, project_id, platform, url, label, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(DistributionLink {
+            id,
+            project_id: project_id.to_string(),
+            platform: platform.to_string(),
+            url: url.to_string(),
+            label: label.map(|s| s.to_string()),
+            created_at: now,
+        })
+    }
+
+    pub fn delete_distribution_link(&self, id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        let count = conn
+            .execute("DELETE FROM project_distribution_links WHERE id = ?", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(count > 0)
+    }
+
+    // ---- Plugin instance → project persistent links ----
+
+    /// Persist a plugin_id → project_id mapping so dbundone can auto-relink
+    /// even when the plugin has no saved state (e.g. freshly added to a DAW project).
+    pub fn save_plugin_link(&self, plugin_id: &str, project_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO plugin_instance_links (plugin_id, project_id, linked_at)
+             VALUES (?1, ?2, datetime('now'))",
+            params![plugin_id, project_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Look up the last project a plugin instance was linked to.
+    pub fn get_plugin_project(&self, plugin_id: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT project_id FROM plugin_instance_links WHERE plugin_id = ?1",
+            params![plugin_id],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(pid) => Ok(Some(pid)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
 }
 
 // ── New struct definitions ─────────────────────────────────────────────────
@@ -1728,6 +1843,17 @@ pub struct OnboardingState {
     pub completed_steps: Vec<String>,
     pub dismissed: bool,
     pub current_step: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DistributionLink {
+    pub id: String,
+    pub project_id: String,
+    pub platform: String,
+    pub url: String,
+    pub label: Option<String>,
+    pub created_at: String,
 }
 
 #[cfg(test)]
