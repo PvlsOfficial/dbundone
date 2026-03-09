@@ -13,7 +13,7 @@ export function Hero() {
       <div className="gradient-blob w-[600px] h-[600px] bg-primary/[0.07] -top-[200px] -left-[200px]" />
       <div className="gradient-blob w-[500px] h-[500px] bg-violet-500/[0.05] top-[100px] right-[-100px]" />
 
-      <div className="mx-auto max-w-350 px-6 pt-32 pb-20 w-full relative z-10">
+      <div className="mx-auto max-w-300 px-6 pt-32 pb-20 w-full relative z-10">
         <div className="grid lg:grid-cols-[1fr_1.3fr] gap-12 lg:gap-20 items-center">
           {/* Left — copy */}
           <motion.div
@@ -80,11 +80,11 @@ export function Hero() {
               delay: 0.15,
               ease: [0.21, 0.47, 0.32, 0.98],
             }}
-            className="relative hidden lg:block"
+            className="relative hidden md:block"
             style={{ perspective: "1200px" }}
           >
             {/* Ambient glow */}
-            <div className="absolute -inset-8 bg-primary/[0.08] rounded-3xl blur-3xl" />
+            <div className="absolute -inset-8 bg-primary/8 rounded-3xl blur-3xl" />
 
             {/* Screenshot */}
             <div className="relative rounded-xl overflow-hidden border border-border/40 shadow-2xl">
@@ -92,7 +92,7 @@ export function Hero() {
               <img
                 src="/screenshots/dashboard.png"
                 alt="DBundone dashboard"
-                className="w-full h-auto block"
+                className="w-2xl h-auto block"
               />
             </div>
           </motion.div>
