@@ -62,42 +62,23 @@ export const FEATURES = [
 
 export const PRICING_TIERS = [
   {
-    name: "Free",
+    name: "Free & Open Source",
     price: "$0",
     period: "forever",
-    description: "Get started with the essentials",
-    features: [
-      "Up to 25 projects",
-      "Basic scanning & metadata extraction",
-      "3 audio versions per project",
-      "Project status tracking",
-      "Basic search & filtering",
-      "7 languages supported",
-    ],
-    cta: "Download Free",
-    ctaHref: "/download",
-    highlighted: false,
-  },
-  {
-    name: "Pro",
-    price: "$79",
-    period: "one-time",
-    description: "Everything you need. Pay once, own it forever.",
+    description: "Everything included. No tiers, no paywalls. Open source on GitHub.",
     features: [
       "Unlimited projects & audio versions",
       "LUFS / RMS / Peak analysis",
       "Full task management & kanban",
       "Statistics dashboard & analytics",
-      "AI artwork generation",
-      "VST3 plugin bridge",
-      "Cloud collaboration & sharing",
+      "VST3 & CLAP plugin bridge",
       "Deep FLP analysis (plugins, samples, mixer)",
       "All future updates included",
-      "Priority support",
+      "7 languages supported",
     ],
-    cta: "Buy Now",
-    ctaHref: "/api/checkout",
-    highlighted: true,
+    cta: "Download Free",
+    ctaHref: "/download",
+    highlighted: false,
   },
 ] as const;
 
@@ -118,9 +99,9 @@ export const FAQ_ITEMS = [
       "The DBundone Bridge is a VST3 plugin you load inside your DAW (FL Studio or Ableton). It connects to the DBundone app over a local WebSocket connection. It can automatically capture recordings when you hit play, detect offline renders/bounces, and push audio versions directly to the correct project — all without leaving your DAW.",
   },
   {
-    question: "What's included in the free version?",
+    question: "Is DBundone really free?",
     answer:
-      "The free version gives you full access to project scanning, metadata extraction, search & filtering, status tracking, and basic organization for up to 25 projects with 3 audio versions each. It's not a trial — it works forever.",
+      "Yes — DBundone is completely free and open source. Everything is included with no tiers, paywalls, or subscriptions. You can download it, use it, and contribute on GitHub.",
   },
   {
     question: "What data does DBundone collect?",
@@ -138,42 +119,42 @@ export const FAQ_ITEMS = [
       "Windows 10+ (64-bit) or macOS 12+. The app uses roughly 150MB of RAM. The VST3 plugin requires a VST3-compatible DAW. No internet connection required for core functionality.",
   },
   {
-    question: "What's your refund policy?",
+    question: "Can I contribute to DBundone?",
     answer:
-      "We offer a full refund within 14 days of purchase, no questions asked. If DBundone doesn't fit your workflow, we'll refund you immediately. Contact us at support@dbundone.com.",
+      "Absolutely. DBundone is open source on GitHub. Feel free to open issues, submit pull requests, or suggest features. Community contributions are welcome.",
   },
 ] as const;
 
 export const TESTIMONIALS = [
   {
-    name: "Marcus T.",
-    role: "Hip-Hop Producer",
-    text: "I had 400+ FL Studio projects scattered across three drives. DBundone found all of them in under a minute and organized everything. The FLP analysis showing all my plugins per project is insane.",
+    name: "pvls",
+    role: "Producer",
+    text: "Had hundreds of FL projects scattered everywhere. DBundone found them all instantly and organized everything. The FLP analysis is insane — seeing every plugin per project without opening FL is wild.",
   },
   {
-    name: "Sarah K.",
-    role: "Electronic Music Artist",
-    text: "The audio version control alone is worth it. Being able to A/B compare mixes with actual LUFS readings instead of just guessing? Game changer for my mastering workflow.",
+    name: "R⌀ft3x",
+    role: "Producer",
+    text: "The VST bridge changed how I work. Load it once in my template and every bounce gets versioned automatically. I haven't lost a mix since.",
   },
   {
-    name: "DJ Rhythm",
-    role: "Beatmaker & YouTuber",
-    text: "I was using spreadsheets to track my beats. Now I have a kanban board, automatic BPM detection, and stats showing me I actually spend more time in the studio than I thought. My workflow has never been this clean.",
+    name: "Grxwl",
+    role: "Producer",
+    text: "Finally something that actually understands DAW files instead of just being a generic folder manager with a music skin. DBundone gets it.",
   },
   {
-    name: "Alex Chen",
-    role: "Film Composer",
-    text: "The VST plugin bridge is brilliant. I load it in my template, and every recording session gets automatically versioned and linked to the project. No more manually exporting and renaming files.",
+    name: "Deqonnector",
+    role: "Producer",
+    text: "The stats dashboard is addictive. Seeing my production habits laid out — streaks, plugin usage, time per project — actually made me more consistent in the studio.",
   },
   {
-    name: "Luna Beats",
-    role: "Lo-Fi Producer",
-    text: "Finally something built for how producers actually work. Not another generic project manager with a music skin — DBundone understands DAW files natively.",
+    name: "kystar",
+    role: "Producer",
+    text: "Switched from keeping notes in my phone to full kanban boards per project. Way easier to track what needs mixing, what's done, what's waiting on features.",
   },
   {
-    name: "Kai Westbrook",
-    role: "Mixing Engineer",
-    text: "Being able to see every plugin used across all my client projects from one dashboard saved me hours of troubleshooting. I can instantly find which projects use a specific VST.",
+    name: "prod. dre2x",
+    role: "Beat Producer",
+    text: "Being able to compare mixes side by side with actual LUFS readings is a game changer. No more guessing if the new version is actually louder or just different.",
   },
 ] as const;
 
@@ -198,7 +179,7 @@ export const FOOTER_LINKS = {
   social: [
     { label: "Discord", href: "https://discord.gg/dbundone" },
     { label: "Twitter", href: "https://twitter.com/dbundone" },
-    { label: "GitHub", href: "https://github.com/dbundone" },
+    { label: "GitHub", href: "https://github.com/PvlsOfficial/dbundone" },
     { label: "YouTube", href: "https://youtube.com/@dbundone" },
   ],
 } as const;

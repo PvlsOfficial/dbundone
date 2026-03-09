@@ -18,6 +18,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
     FileAudio,
     MessageSquare,
     Folder,
+    FolderOpen,
     Sparkles,
     ChevronDown,
     ChevronUp,
@@ -276,10 +277,9 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
 
     // Color presets for tag creation
     const colorPresets = [
-      '#ef4444', '#f97316', '#f59e0b', '#eab308', '#84cc16',
-      '#22c55e', '#10b981', '#14b8a6', '#06b6d4', '#0ea5e9',
-      '#3b82f6', '#6366f1', '#8b5cf6', '#a855f7', '#d946ef',
-      '#ec4899', '#f43f5e', '#78716c', '#64748b', '#71717a'
+      '#ef4444', '#f97316', '#f59e0b', '#84cc16',
+      '#22c55e', '#10b981', '#06b6d4', '#3b82f6',
+      '#6366f1', '#8b5cf6', '#a855f7', '#ec4899',
     ]
 
     // Computed project with optimistic updates
@@ -1321,7 +1321,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                   )}
 
                   {/* Status Pipeline */}
-                  <div className="flex items-center gap-1 mt-3">
+                  <div className="flex items-center gap-1 mt-3 flex-wrap">
                     {STATUS_PIPELINE.map((statusKey, index) => {
                       const config = STATUS_CONFIG[statusKey]
                       const isActive = displayProject.status === statusKey
@@ -1420,14 +1420,23 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                 </div>
 
                 {/* Action Buttons */}
-                <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="sm" onClick={() => setIsEditingProject(!isEditingProject)}>
-                    <Edit2 className="w-4 h-4 mr-1" />
-                    {isEditingProject ? "Close" : "Edit"}
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <Button variant={isEditingProject ? "secondary" : "ghost"} size="sm" className="h-8 px-2 text-xs gap-1.5" onClick={() => setIsEditingProject(!isEditingProject)}>
+                    <Edit2 className="w-3.5 h-3.5" />
+                    {isEditingProject ? "Close edit" : "Edit"}
                   </Button>
+                  {project.dawProjectPath && (() => {
+                    const dir = project.dawProjectPath!.replace(/[\\/][^\\/]+$/, '')
+                    return dir ? (
+                      <Button variant="ghost" size="sm" className="h-8 px-2 text-xs gap-1.5" onClick={() => window.electron?.openFolder(dir)}>
+                        <FolderOpen className="w-3.5 h-3.5" />
+                        Open folder
+                      </Button>
+                    ) : null
+                  })()}
                   {project.dawProjectPath && (
-                    <Button variant="outline" size="sm" onClick={() => onOpenDaw(project)}>
-                      <Folder className="w-4 h-4 mr-1" />
+                    <Button variant="ghost" size="sm" className="h-8 px-2 text-xs gap-1.5" onClick={() => onOpenDaw(project)}>
+                      <Folder className="w-3.5 h-3.5" />
                       Open in DAW
                     </Button>
                   )}
@@ -1610,7 +1619,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                       {newTag.trim() && !tags.some(t => t.name.toLowerCase() === newTag.trim().toLowerCase()) && (
                         <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/30 border border-border/30">
                           <div className="flex gap-0.5">
-                            {colorPresets.slice(0, 10).map((color) => (
+                            {colorPresets.map((color) => (
                               <button
                                 key={color}
                                 type="button"

@@ -36,6 +36,7 @@ import {
   Plus,
   X,
   FolderSearch,
+  Tag,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -55,7 +56,7 @@ import { DEFAULT_SETTINGS } from "@/lib/constants"
 import { Logo } from "@/components/Logo"
 import { useAuth } from "@/contexts/AuthContext"
 import { useI18n } from "@/i18n"
-import type { AppSettings } from "@shared/types"
+import type { AppSettings, Tag as TagType } from "@shared/types"
 import { SUPPORTED_DAWS, DAW_EXTENSIONS } from "@shared/types"
 
 const isElectron = () => typeof window !== 'undefined' && typeof window.electron !== 'undefined'
@@ -69,6 +70,9 @@ interface SettingsProps {
   settings?: AppSettings
   onSettingsChange?: (settings: Partial<AppSettings>) => void
   onRemoveAllArtwork?: () => Promise<void>
+  tags?: TagType[]
+  onDeleteTag?: (id: string) => Promise<void>
+  onCreateTag?: (name: string, color?: string) => Promise<TagType | null>
 }
 
 const aiProviders = [
@@ -100,7 +104,7 @@ const languages = [
   { value: "ro", label: "Română" },
 ]
 
-export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, onRescan, onRefreshMetadata, onSyncFileDates, settings: externalSettings, onSettingsChange: externalOnSettingsChange, onRemoveAllArtwork }) => {
+export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, onRescan, onRefreshMetadata, onSyncFileDates, settings: externalSettings, onSettingsChange: externalOnSettingsChange, onRemoveAllArtwork, tags = [], onDeleteTag, onCreateTag }) => {
   const [settings, setSettings] = useState<AppSettings>(externalSettings || DEFAULT_SETTINGS)
   const [originalSettings, setOriginalSettings] = useState<AppSettings>(externalSettings || DEFAULT_SETTINGS)
   const [isLoading, setIsLoading] = useState(true)
@@ -121,11 +125,21 @@ export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, 
     { id: 'general', label: t('settings.nav.general'), icon: SettingsIcon },
     { id: 'appearance', label: t('settings.nav.appearance'), icon: Monitor },
     { id: 'daw', label: t('settings.nav.daw'), icon: Music },
+    { id: 'tags', label: 'Tags', icon: Tag },
     { id: 'ai-artwork', label: t('settings.nav.aiArtwork'), icon: Sparkles },
     { id: 'notifications', label: t('settings.nav.notifications'), icon: Bell },
     { id: 'integrations', label: t('settings.nav.integrations'), icon: Puzzle },
     { id: 'data', label: t('settings.nav.data'), icon: Database },
     { id: 'about', label: t('settings.nav.about'), icon: Info },
+  ]
+
+  const [newTagName, setNewTagName] = useState('')
+  const [newTagColor, setNewTagColor] = useState('#8b5cf6')
+
+  const tagColorPresets = [
+    '#ef4444', '#f97316', '#f59e0b', '#84cc16',
+    '#22c55e', '#10b981', '#06b6d4', '#3b82f6',
+    '#6366f1', '#8b5cf6', '#a855f7', '#ec4899',
   ]
 
   useEffect(() => {
@@ -1192,6 +1206,104 @@ export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, 
                     </div>
                   )}
                 </div>
+              </div>
+            </motion.section>
+          )}
+
+          {/* ── TAGS ─────────────────────────────────────────────── */}
+          {activeSection === 'tags' && (
+            <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
+              <div className="flex items-center gap-2 mb-4">
+                <Tag className="w-5 h-5 text-primary" />
+                <h2 className="text-lg font-semibold">Tags</h2>
+              </div>
+
+              {/* Create new tag */}
+              <div className="p-4 rounded-xl bg-card/50 border border-border/30 space-y-3">
+                <h3 className="text-sm font-medium">Create tag</h3>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Tag name..."
+                    value={newTagName}
+                    onChange={e => setNewTagName(e.target.value)}
+                    className="h-8 text-sm"
+                    onKeyDown={async e => {
+                      if (e.key === 'Enter' && newTagName.trim() && onCreateTag) {
+                        await onCreateTag(newTagName.trim(), newTagColor)
+                        setNewTagName('')
+                      }
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    className="h-8 px-3"
+                    disabled={!newTagName.trim()}
+                    onClick={async () => {
+                      if (newTagName.trim() && onCreateTag) {
+                        await onCreateTag(newTagName.trim(), newTagColor)
+                        setNewTagName('')
+                      }
+                    }}
+                  >
+                    <Plus className="w-3.5 h-3.5 mr-1" /> Add
+                  </Button>
+                </div>
+                {/* Color picker */}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Color:</span>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {tagColorPresets.map(color => (
+                      <button
+                        key={color}
+                        type="button"
+                        aria-label={`Select color ${color}`}
+                        onClick={() => setNewTagColor(color)}
+                        className={cn(
+                          "w-5 h-5 rounded-full border-2 transition-transform hover:scale-110",
+                          newTagColor === color ? "border-white ring-2 ring-offset-1 ring-offset-background ring-primary" : "border-transparent"
+                        )}
+                        style={{ backgroundColor: color }}
+                      />
+                    ))}
+                  </div>
+                  {/* Live preview */}
+                  <span
+                    className="ml-2 text-xs px-2 py-0.5 rounded-full font-medium"
+                    style={{ backgroundColor: `${newTagColor}25`, color: newTagColor }}
+                  >
+                    {newTagName || 'preview'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Existing tags */}
+              <div className="p-4 rounded-xl bg-card/50 border border-border/30">
+                <h3 className="text-sm font-medium mb-3">All tags ({tags.length})</h3>
+                {tags.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No tags yet.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {tags.map(tag => (
+                      <div
+                        key={tag.id}
+                        className="flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full text-xs font-medium"
+                        style={{ backgroundColor: `${tag.color}25`, color: tag.color }}
+                      >
+                        {tag.name}
+                        {onDeleteTag && (
+                          <button
+                            type="button"
+                            aria-label={`Remove tag ${tag.name}`}
+                            onClick={() => onDeleteTag(tag.id)}
+                            className="w-4 h-4 rounded-full flex items-center justify-center hover:bg-black/20 transition-colors"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </motion.section>
           )}

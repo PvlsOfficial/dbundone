@@ -6,7 +6,7 @@ import { DownloadPage } from "./DownloadPage";
 export const metadata: Metadata = {
   title: "Download DBundone",
   description:
-    "Download DBundone for Windows or macOS. Free tier available with no account required.",
+    "Download DBundone for Windows. Free and open source — no account required, no limits.",
   alternates: {
     canonical: "https://dbundone.com/download",
   },

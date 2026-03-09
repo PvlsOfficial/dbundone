@@ -1,14 +1,11 @@
-import React, { useState, useMemo, useCallback, memo } from "react"
-import { motion, AnimatePresence } from "framer-motion"
+import React, { useState, useMemo, useCallback, memo, useEffect, useRef } from "react"
 import {
   Plus,
-  GripVertical,
   Trash2,
   CheckCircle2,
   Circle,
   Loader2,
   ListTodo,
-  ChevronDown,
   Clock,
   Flag,
   AlertTriangle,
@@ -16,9 +13,6 @@ import {
   X,
   MoreHorizontal,
   Edit3,
-  Calendar,
-  ArrowRight,
-  Tag,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -26,7 +20,6 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
 import {
   Dialog,
   DialogContent,
@@ -55,8 +48,6 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { Task, Annotation, Project } from "@shared/types"
-
-const isElectron = () => typeof window !== "undefined" && typeof window.electron !== "undefined"
 
 interface ProjectKanbanProps {
   project: Project
@@ -95,35 +86,34 @@ const PRIORITY_CONFIG = {
   urgent: { label: "Urgent", color: "text-red-500", bgColor: "bg-red-500/15", icon: <AlertTriangle className="w-3 h-3" /> },
 }
 
+const DRAG_THRESHOLD = 5
+
 // Task Card
-const TaskCard = memo(({ 
-  task, 
-  onUpdate, 
-  onDelete, 
-  onEdit 
-}: { 
+const TaskCard = memo(({
+  task,
+  isDragging,
+  onDragStart,
+  onUpdate,
+  onDelete,
+  onEdit
+}: {
   task: Task
+  isDragging: boolean
+  onDragStart: (e: React.MouseEvent) => void
   onUpdate: (id: string, updates: Partial<Task>) => Promise<void>
   onDelete: (id: string) => Promise<void>
   onEdit: (task: Task) => void
 }) => {
-  const [isDragging, setIsDragging] = useState(false)
-
   const priority = (task.priority || "medium") as keyof typeof PRIORITY_CONFIG
   const priorityConfig = PRIORITY_CONFIG[priority]
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger>
+      <ContextMenuTrigger asChild>
         <div
-          draggable
-          onDragStart={(e) => {
-            e.dataTransfer.setData("text/plain", JSON.stringify({ type: "task", id: task.id }))
-            setIsDragging(true)
-          }}
-          onDragEnd={() => setIsDragging(false)}
+          onMouseDown={onDragStart}
           className={cn(
-            "group p-3 rounded-lg border bg-card hover:bg-accent/30 transition-all cursor-grab active:cursor-grabbing",
+            "group p-3 rounded-lg border bg-card hover:bg-accent/30 transition-all cursor-grab active:cursor-grabbing select-none",
             isDragging && "opacity-50 scale-95"
           )}
         >
@@ -242,8 +232,8 @@ const AnnotationTaskCard = memo(({
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger>
-        <div className="p-3 rounded-lg border bg-card hover:bg-accent/30 transition-all border-dashed border-primary/30">
+      <ContextMenuTrigger asChild>
+        <div className="p-3 rounded-lg border bg-card hover:bg-accent/30 transition-all border-dashed border-primary/30 select-none">
           <div className="flex items-start justify-between gap-2 mb-1.5">
             <div className="flex items-center gap-2 min-w-0 flex-1">
               <Badge variant="secondary" className="text-[10px] flex-shrink-0">
@@ -308,11 +298,8 @@ export const ProjectKanban: React.FC<ProjectKanbanProps> = ({
   onCreateTask,
   onUpdateTask,
   onDeleteTask,
-  onReorderTasks,
-  onConvertAnnotation,
   onUnconvertAnnotation,
   onUpdateAnnotationTask,
-  onRefresh,
 }) => {
   const [newTaskTitle, setNewTaskTitle] = useState("")
   const [newTaskColumn, setNewTaskColumn] = useState<TaskStatus | null>(null)
@@ -322,6 +309,156 @@ export const ProjectKanban: React.FC<ProjectKanbanProps> = ({
   const [editPriority, setEditPriority] = useState<string>("medium")
   const [editDueDate, setEditDueDate] = useState("")
   const [dragOverColumn, setDragOverColumn] = useState<TaskStatus | null>(null)
+  const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null)
+
+  // Refs for drag system
+  const dragRef = useRef<{
+    id: string
+    type: "task" | "annotation"
+    startX: number
+    startY: number
+    offsetX: number
+    offsetY: number
+    cardEl: HTMLElement
+    ghost: HTMLElement | null
+    activated: boolean
+  } | null>(null)
+  const columnRefs = useRef<Map<TaskStatus, HTMLElement>>(new Map())
+  const onUpdateTaskRef = useRef(onUpdateTask)
+  const onUpdateAnnotationTaskRef = useRef(onUpdateAnnotationTask)
+  onUpdateTaskRef.current = onUpdateTask
+  onUpdateAnnotationTaskRef.current = onUpdateAnnotationTask
+
+  // Column ref callback
+  const setColumnRef = useCallback((status: TaskStatus, el: HTMLDivElement | null) => {
+    if (el) columnRefs.current.set(status, el)
+    else columnRefs.current.delete(status)
+  }, [])
+
+  // Detect which column the cursor is over
+  const getColumnAtPoint = useCallback((x: number, y: number): TaskStatus | null => {
+    for (const [status, el] of columnRefs.current.entries()) {
+      const rect = el.getBoundingClientRect()
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+        return status
+      }
+    }
+    return null
+  }, [])
+
+  // Global mousemove + mouseup for drag
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      const drag = dragRef.current
+      if (!drag) return
+
+      if (!drag.activated) {
+        const dx = e.clientX - drag.startX
+        const dy = e.clientY - drag.startY
+        if (Math.sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD) return
+
+        // Activate drag: create ghost
+        drag.activated = true
+        const rect = drag.cardEl.getBoundingClientRect()
+        const ghost = drag.cardEl.cloneNode(true) as HTMLElement
+        ghost.style.position = "fixed"
+        ghost.style.left = `${rect.left}px`
+        ghost.style.top = `${rect.top}px`
+        ghost.style.width = `${rect.width}px`
+        ghost.style.zIndex = "9999"
+        ghost.style.pointerEvents = "none"
+        ghost.style.opacity = "0.92"
+        ghost.style.transform = "rotate(2deg) scale(1.03)"
+        ghost.style.boxShadow = "0 12px 28px rgba(0,0,0,0.2)"
+        ghost.style.transition = "transform 0.15s ease, box-shadow 0.15s ease"
+        ghost.style.borderRadius = "0.5rem"
+        document.body.appendChild(ghost)
+        drag.ghost = ghost
+
+        document.body.style.userSelect = "none"
+        document.body.style.cursor = "grabbing"
+        setDraggingTaskId(drag.id)
+      }
+
+      // Move ghost
+      if (drag.ghost) {
+        drag.ghost.style.left = `${e.clientX - drag.offsetX}px`
+        drag.ghost.style.top = `${e.clientY - drag.offsetY}px`
+      }
+
+      // Detect column hover
+      setDragOverColumn(getColumnAtPoint(e.clientX, e.clientY))
+    }
+
+    const onMouseUp = async (e: MouseEvent) => {
+      const drag = dragRef.current
+      if (!drag) return
+      dragRef.current = null
+
+      // Clean up ghost and styles
+      if (drag.ghost) {
+        drag.ghost.remove()
+      }
+      document.body.style.userSelect = ""
+      document.body.style.cursor = ""
+
+      if (!drag.activated) {
+        // Threshold not exceeded — it was a click, not a drag. Do nothing.
+        setDraggingTaskId(null)
+        setDragOverColumn(null)
+        return
+      }
+
+      const targetColumn = getColumnAtPoint(e.clientX, e.clientY)
+      setDraggingTaskId(null)
+      setDragOverColumn(null)
+
+      if (targetColumn) {
+        if (drag.type === "task") {
+          await onUpdateTaskRef.current(drag.id, { status: targetColumn })
+        } else {
+          await onUpdateAnnotationTaskRef.current(drag.id, { taskStatus: targetColumn })
+        }
+      }
+    }
+
+    document.addEventListener("mousemove", onMouseMove)
+    document.addEventListener("mouseup", onMouseUp)
+    return () => {
+      document.removeEventListener("mousemove", onMouseMove)
+      document.removeEventListener("mouseup", onMouseUp)
+      // Clean up if unmounted mid-drag
+      if (dragRef.current?.ghost) {
+        dragRef.current.ghost.remove()
+        document.body.style.userSelect = ""
+        document.body.style.cursor = ""
+      }
+    }
+  }, [getColumnAtPoint])
+
+  // Start tracking a potential drag (mousedown on card)
+  const handleCardMouseDown = useCallback((e: React.MouseEvent, id: string, type: "task" | "annotation") => {
+    // Only left click
+    if (e.button !== 0) return
+    // Don't start drag on interactive elements (buttons, inputs, etc.)
+    const target = e.target as HTMLElement
+    if (target.closest("button, a, input, textarea, [role='menuitem']")) return
+
+    const cardEl = e.currentTarget as HTMLElement
+    const rect = cardEl.getBoundingClientRect()
+
+    dragRef.current = {
+      id,
+      type,
+      startX: e.clientX,
+      startY: e.clientY,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+      cardEl,
+      ghost: null,
+      activated: false,
+    }
+  }, [])
 
   // Project tasks only
   const projectTasks = useMemo(
@@ -365,19 +502,6 @@ export const ProjectKanban: React.FC<ProjectKanbanProps> = ({
     setNewTaskColumn(null)
   }
 
-  const handleDrop = useCallback(async (e: React.DragEvent, targetStatus: TaskStatus) => {
-    e.preventDefault()
-    setDragOverColumn(null)
-    try {
-      const data = JSON.parse(e.dataTransfer.getData("text/plain"))
-      if (data.type === "task") {
-        await onUpdateTask(data.id, { status: targetStatus })
-      } else if (data.type === "annotation-task") {
-        await onUpdateAnnotationTask(data.id, { taskStatus: targetStatus })
-      }
-    } catch {}
-  }, [onUpdateTask, onUpdateAnnotationTask])
-
   const handleEditSave = async () => {
     if (!editingTask) return
     await onUpdateTask(editingTask.id, {
@@ -410,7 +534,7 @@ export const ProjectKanban: React.FC<ProjectKanbanProps> = ({
       </div>
 
       {/* Kanban columns */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className={cn("grid grid-cols-3 gap-3", draggingTaskId && "select-none")}>
         {COLUMNS.map(column => {
           const colTasks = columnTasks[column.id] || []
           const colAnnotations = annotationTasksByStatus[column.id] || []
@@ -419,13 +543,11 @@ export const ProjectKanban: React.FC<ProjectKanbanProps> = ({
           return (
             <div
               key={column.id}
+              ref={(el) => setColumnRef(column.id, el)}
               className={cn(
                 "flex flex-col rounded-xl border min-h-[200px] transition-all",
                 dragOverColumn === column.id && "ring-2 ring-primary/50 bg-primary/5"
               )}
-              onDragOver={(e) => { e.preventDefault(); setDragOverColumn(column.id) }}
-              onDragLeave={() => setDragOverColumn(null)}
-              onDrop={(e) => handleDrop(e, column.id)}
             >
               {/* Column header */}
               <div className={cn("flex items-center gap-2 p-3 rounded-t-xl", column.bgColor)}>
@@ -441,6 +563,8 @@ export const ProjectKanban: React.FC<ProjectKanbanProps> = ({
                     <TaskCard
                       key={task.id}
                       task={task}
+                      isDragging={draggingTaskId === task.id}
+                      onDragStart={(e) => handleCardMouseDown(e, task.id, "task")}
                       onUpdate={onUpdateTask}
                       onDelete={onDeleteTask}
                       onEdit={openEdit}

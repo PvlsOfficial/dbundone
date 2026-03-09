@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { FOOTER_LINKS } from "@/lib/constants";
+import { AppLogo } from "@/components/AppLogo";
 
 export function Footer() {
   return (
@@ -9,16 +10,13 @@ export function Footer() {
           {/* Brand */}
           <div className="col-span-2 md:col-span-1">
             <Link href="/" className="flex items-center gap-2.5">
-              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/10 border border-primary/20">
-                <span className="text-xs font-bold text-primary">D</span>
-              </div>
+              <AppLogo size={32} />
               <span className="text-sm font-semibold tracking-tight">
                 DBundone
               </span>
             </Link>
             <p className="mt-4 text-xs text-muted-foreground leading-relaxed max-w-[200px]">
-              Built for producers, by producers. Music production management
-              that actually understands your workflow.
+              Free and open source. Built for producers, by producers.
             </p>
           </div>
 

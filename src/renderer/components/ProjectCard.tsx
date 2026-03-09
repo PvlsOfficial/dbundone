@@ -452,7 +452,12 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
 
                     {/* Key */}
                     {project.musicalKey && project.musicalKey !== "None" && (
-                      <span className="font-medium">{project.musicalKey}</span>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="font-medium max-w-[5rem] truncate inline-block">{project.musicalKey}</span>
+                        </TooltipTrigger>
+                        <TooltipContent>{project.musicalKey}</TooltipContent>
+                      </Tooltip>
                     )}
 
                     {/* Tags */}

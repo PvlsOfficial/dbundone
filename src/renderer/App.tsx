@@ -926,12 +926,10 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     }
   }, [refreshData])
 
-  const handleCreateTag = useCallback(async (name: string): Promise<Tag | null> => {
+  const handleCreateTag = useCallback(async (name: string, color?: string): Promise<Tag | null> => {
     try {
-      // Generate a random color for the tag
-      const colors = ['#8b5cf6', '#3b82f6', '#06b6d4', '#22c55e', '#eab308', '#f97316', '#ef4444', '#ec4899'];
-      const color = colors[Math.floor(Math.random() * colors.length)];
-      const newTag = await window.electron?.createTag({ name, color });
+      const tagColor = color || '#8b5cf6';
+      const newTag = await window.electron?.createTag({ name, color: tagColor });
       // Immediately add the new tag to state for instant UI update
       if (newTag) {
         setTags(prev => [...prev, newTag]);
@@ -940,6 +938,15 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     } catch (error) {
       console.error('Failed to create tag:', error);
       return null;
+    }
+  }, []);
+
+  const handleDeleteTag = useCallback(async (id: string) => {
+    try {
+      await window.electron?.deleteTag(id);
+      setTags(prev => prev.filter(t => t.id !== id));
+    } catch (error) {
+      console.error('Failed to delete tag:', error);
     }
   }, []);
 
@@ -1026,6 +1033,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             onSettingsChange={onSettingsChange}
             onOpenArtworkManager={handleOpenArtworkManager}
             pluginSessions={pluginSessions}
+            onScanFolder={handleScanFolderWithSelection}
           />
         )
       case "project-detail":
@@ -1110,6 +1118,9 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
           settings={settings}
           onSettingsChange={handleSettingsChange}
           onRemoveAllArtwork={handleRemoveAllArtwork}
+          tags={tags}
+          onDeleteTag={handleDeleteTag}
+          onCreateTag={handleCreateTag}
         />
       case "shared":
         return <SharedWithMe />

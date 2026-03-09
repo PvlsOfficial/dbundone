@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Menu, X } from "lucide-react";
 import { NAV_LINKS } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
+import { AppLogo } from "@/components/AppLogo";
 
 export function Header() {
   const [scrolled, setScrolled] = useState(false);
@@ -28,9 +29,7 @@ export function Header() {
         <div className="flex h-16 items-center justify-between">
           {/* Logo */}
           <Link href="/" className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 border border-primary/20">
-              <span className="text-sm font-bold text-primary">D</span>
-            </div>
+            <AppLogo size={42} />
             <span className="text-[15px] font-semibold tracking-tight">
               DBundone
             </span>

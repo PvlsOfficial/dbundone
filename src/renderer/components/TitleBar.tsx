@@ -50,7 +50,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ className }) => {
           </div>
           <div className="absolute -inset-0.5 rounded-lg bg-gradient-to-br from-primary/30 to-transparent blur-sm -z-10" />
         </div>
-        <span className="text-sm font-semibold tracking-tight text-foreground/90 pointer-events-none select-none">
+        <span className="font-brand text-sm tracking-tight text-foreground/90 pointer-events-none select-none">
           DBundone
         </span>
       </div>

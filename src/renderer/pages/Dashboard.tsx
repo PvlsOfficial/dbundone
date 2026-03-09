@@ -80,6 +80,7 @@ interface DashboardProps {
   onSettingsChange: (settings: Partial<AppSettings>) => void
   onOpenArtworkManager?: (project: Project) => void
   pluginSessions?: PluginSession[]
+  onScanFolder?: () => void
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -106,6 +107,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onSettingsChange,
   onOpenArtworkManager,
   pluginSessions,
+  onScanFolder,
 }) => {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
@@ -949,7 +951,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     : t('dashboard.noProjectsHint')}
                 </p>
                 <div className="flex items-center gap-3">
-                  <Button onClick={handleNewProject} className="gap-2">
+                  {onScanFolder && (
+                    <Button onClick={onScanFolder} className="gap-2">
+                      <FolderPlus className="w-4 h-4" />
+                      Scan for projects
+                    </Button>
+                  )}
+                  <Button variant="outline" onClick={handleNewProject} className="gap-2">
                     <Plus className="w-4 h-4" />
                     {t('dashboard.createProject')}
                   </Button>

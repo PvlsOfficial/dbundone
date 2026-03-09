@@ -65,10 +65,9 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({ project, isOpen, onC
 
   // Color presets for tag creation
   const colorPresets = [
-    '#ef4444', '#f97316', '#f59e0b', '#eab308', '#84cc16',
-    '#22c55e', '#10b981', '#14b8a6', '#06b6d4', '#0ea5e9',
-    '#3b82f6', '#6366f1', '#8b5cf6', '#a855f7', '#d946ef',
-    '#ec4899', '#f43f5e', '#78716c', '#64748b', '#71717a'
+    '#ef4444', '#f97316', '#f59e0b', '#84cc16',
+    '#22c55e', '#10b981', '#06b6d4', '#3b82f6',
+    '#6366f1', '#8b5cf6', '#a855f7', '#ec4899',
   ]
 
   // Helper to get tag color from tags list
@@ -468,42 +467,49 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({ project, isOpen, onC
                 ))}
                 {/* Create new tag button when typing */}
                 {newTag.trim() && !tags.some(t => t.name.toLowerCase() === newTag.trim().toLowerCase()) && (
-                  <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md border">
-                    <span className="text-xs text-muted-foreground">Create new tag:</span>
-                    <div className="flex gap-1">
-                        {colorPresets.slice(0, 8).map((color) => (
-                        <button
-                          key={color}
-                          type="button"
-                          aria-label={`Select color ${color}`}
-                          className={`w-4 h-4 rounded-full border-2 transition-transform hover:scale-110 ${
-                            newTagColor === color ? 'border-white ring-2 ring-offset-1 ring-offset-background ring-primary' : 'border-transparent'
-                          }`}
-                          style={{ backgroundColor: color }}
-                          onClick={() => setNewTagColor(color)}
-                        />
-                      ))}
+                  <div className="flex flex-col gap-2 p-2 bg-muted/50 rounded-md border">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">Color:</span>
+                      <div className="flex gap-1 flex-wrap">
+                        {colorPresets.map((color) => (
+                          <button
+                            key={color}
+                            type="button"
+                            aria-label={`Select color ${color}`}
+                            className={`w-4 h-4 rounded-full border-2 transition-transform hover:scale-110 ${
+                              newTagColor === color ? 'border-white ring-2 ring-offset-1 ring-offset-background ring-primary' : 'border-transparent'
+                            }`}
+                            style={{ backgroundColor: color }}
+                            onClick={() => setNewTagColor(color)}
+                          />
+                        ))}
+                      </div>
                     </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-2 text-xs hover:bg-primary/30"
-                      style={{
-                        backgroundColor: `${newTagColor}20`,
-                        color: newTagColor
-                      }}
-                      onClick={async () => {
-                        if (onCreateTag) {
-                          const tagName = newTag.trim();
-                          await onCreateTag(tagName, newTagColor);
-                          setSelectedTags([...selectedTags, tagName]);
-                          setNewTag("");
-                        }
-                      }}
-                    >
-                      Create "{newTag.trim()}"
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      {/* Preview — matches exact badge style used in the app */}
+                      <span
+                        className="text-xs px-2 py-0.5 rounded-full font-medium"
+                        style={{ backgroundColor: `${newTagColor}20`, color: newTagColor }}
+                      >
+                        {newTag.trim()}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={async () => {
+                          if (onCreateTag) {
+                            const tagName = newTag.trim();
+                            await onCreateTag(tagName, newTagColor);
+                            setSelectedTags([...selectedTags, tagName]);
+                            setNewTag("");
+                          }
+                        }}
+                      >
+                        Create tag
+                      </Button>
+                    </div>
                   </div>
                 )}
               </div>

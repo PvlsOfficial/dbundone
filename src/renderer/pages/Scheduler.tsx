@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Plus, 
   Calendar, 
-  GripVertical,
   Trash2,
   CheckCircle2,
   Circle,
@@ -92,7 +91,7 @@ function ArtworkImage({ filePath, alt, className, isVisible = true }: { filePath
   // Only trigger Tauri IPC image load when the card is visible
   const url = useImageUrl(isVisible ? filePath : null)
   if (!url) return null
-  return <img src={url} alt={alt} className={className} loading="lazy" decoding="async" />
+  return <img src={url} alt={alt} className={className} loading="lazy" decoding="async" draggable={false} />
 }
 
 interface ProjectColumn {
@@ -132,6 +131,8 @@ interface SchedulerProps {
   onOpenProject: (project: Project) => void;
 }
 
+const DRAG_THRESHOLD = 5;
+
 /**
  * Shared refs that BoardCard reads via ref instead of props.
  * This avoids passing fast-changing global state as props to every card,
@@ -142,8 +143,7 @@ interface BoardSharedState {
   isDragging: boolean;
   draggedProjectIds: Set<string>;
   bulkEditMode: boolean;
-  onDragStart: (project: Project, e: React.DragEvent) => void;
-  onDragEnd: () => void;
+  onMouseDown: (project: Project, e: React.MouseEvent, cardEl: HTMLElement) => void;
   onClick: (project: Project, e: React.MouseEvent) => void;
   onContextMenu: (project: Project, e: React.MouseEvent) => void;
   onEdit: (project: Project) => void;
@@ -174,8 +174,6 @@ const VirtualizedColumn = memo(({
   sharedRef,
   itemHeight,
   overscan,
-  isCustomSort,
-  onReorder,
 }: {
   projects: Project[];
   selectedProjects: Set<string>;
@@ -183,14 +181,11 @@ const VirtualizedColumn = memo(({
   sharedRef: React.RefObject<BoardSharedState>;
   itemHeight: number;
   overscan: number;
-  isCustomSort: boolean;
-  onReorder?: (projectId: string, targetIndex: number) => void;
 }) => {
   const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(0);
-  const [dropIndicatorIndex, setDropIndicatorIndex] = useState<number | null>(null);
 
   // Measure container height once and on resize
   useEffect(() => {
@@ -206,51 +201,6 @@ const VirtualizedColumn = memo(({
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     setScrollTop(e.currentTarget.scrollTop);
   }, []);
-
-  // Compute drop index from mouse Y position relative to the column scroll area
-  const getDropIndex = useCallback((e: React.DragEvent) => {
-    const el = scrollRef.current;
-    if (!el) return 0;
-    const rect = el.getBoundingClientRect();
-    const y = e.clientY - rect.top + el.scrollTop;
-    return Math.min(projects.length, Math.max(0, Math.round(y / itemHeight)));
-  }, [projects.length, itemHeight]);
-
-  const handleColumnDragOver = useCallback((e: React.DragEvent) => {
-    if (!isCustomSort) return;
-    e.preventDefault();
-    e.stopPropagation();
-    setDropIndicatorIndex(getDropIndex(e));
-  }, [isCustomSort, getDropIndex]);
-
-  const handleColumnDragLeave = useCallback((e: React.DragEvent) => {
-    const currentTarget = e.currentTarget as HTMLElement;
-    const relatedTarget = e.relatedTarget as HTMLElement | null;
-    if (!relatedTarget || !currentTarget.contains(relatedTarget)) {
-      setDropIndicatorIndex(null);
-    }
-  }, []);
-
-  const handleColumnDrop = useCallback((e: React.DragEvent) => {
-    if (!isCustomSort || !onReorder) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const targetIndex = getDropIndex(e);
-    setDropIndicatorIndex(null);
-
-    // Read dragged project ID(s) from dataTransfer
-    try {
-      const data = e.dataTransfer.getData('text/plain');
-      if (data) {
-        const ids = JSON.parse(data) as string[];
-        if (ids.length > 0) {
-          onReorder(ids[0], targetIndex);
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }, [isCustomSort, onReorder, getDropIndex]);
 
   const totalHeight = projects.length * itemHeight;
   const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
@@ -268,9 +218,6 @@ const VirtualizedColumn = memo(({
       ref={scrollRef}
       className="flex-1 overflow-y-auto overflow-x-hidden p-2"
       onScroll={handleScroll}
-      onDragOver={handleColumnDragOver}
-      onDragLeave={handleColumnDragLeave}
-      onDrop={handleColumnDrop}
     >
       {projects.length === 0 ? (
         <div className="h-[100px] flex items-center justify-center text-muted-foreground text-xs">
@@ -280,25 +227,15 @@ const VirtualizedColumn = memo(({
         <>
           {topPad > 0 && <div style={{ height: topPad }} aria-hidden />}
           <div className="space-y-2">
-            {visibleProjects.map((project, i) => {
-              const absoluteIndex = startIndex + i;
-              return (
-                <React.Fragment key={project.id}>
-                  {isCustomSort && dropIndicatorIndex === absoluteIndex && (
-                    <div className="h-0.5 bg-primary rounded-full mx-1 -my-1 transition-all" />
-                  )}
-                  <BoardCard
-                    project={project}
-                    isSelected={selectedProjects.has(project.id)}
-                    observer={observer}
-                    sharedRef={sharedRef}
-                  />
-                </React.Fragment>
-              );
-            })}
-            {isCustomSort && dropIndicatorIndex !== null && dropIndicatorIndex >= endIndex && (
-              <div className="h-0.5 bg-primary rounded-full mx-1 transition-all" />
-            )}
+            {visibleProjects.map((project) => (
+              <BoardCard
+                key={project.id}
+                project={project}
+                isSelected={selectedProjects.has(project.id)}
+                observer={observer}
+                sharedRef={sharedRef}
+              />
+            ))}
           </div>
           {bottomPad > 0 && <div style={{ height: bottomPad }} aria-hidden />}
         </>
@@ -328,122 +265,121 @@ const BoardCard = memo(({ project, isSelected, observer, sharedRef }: BoardCardP
   return (
     <div
       ref={ref}
-      draggable
-      onDragStart={(e) => shared.onDragStart(project, e)}
-      onDragEnd={() => shared.onDragEnd()}
+      onMouseDown={(e) => {
+        if (e.button !== 0) return;
+        if ((e.target as HTMLElement).closest('button, a, input, textarea, [role="menuitem"]')) return;
+        shared.onMouseDown(project, e, ref.current!);
+      }}
+      onClick={(e) => shared.onClick(project, e)}
+      onContextMenu={(e) => shared.onContextMenu(project, e)}
+      className={cn(
+        "group relative p-4 rounded-lg border-2 bg-card/80 cursor-grab active:cursor-grabbing w-full select-none",
+        "transition-all duration-150 ease-out",
+        isSelected
+          ? "border-primary/60 bg-primary/5"
+          : "border-transparent hover:border-primary/30 hover:bg-card/90 hover:shadow-md",
+      )}
     >
-      <div
-        onClick={(e) => shared.onClick(project, e)}
-        onContextMenu={(e) => shared.onContextMenu(project, e)}
-        className={cn(
-          "group relative p-4 rounded-lg border-2 bg-card/80 cursor-grab active:cursor-grabbing w-full select-none",
-          "transition-all duration-150 ease-out",
-          isSelected
-            ? "border-primary/60 bg-primary/5"
-            : "border-transparent hover:border-primary/30 hover:bg-card/90 hover:shadow-md",
-        )}
-      >
-        <div className="flex items-start gap-3">
-          {/* Artwork */}
-          <div className="w-14 h-14 rounded-lg bg-muted overflow-hidden flex-shrink-0 ring-2 ring-transparent group-hover:ring-primary/20 transition-all">
-            {project.artworkPath ? (
-              <ArtworkImage
-                filePath={project.artworkPath}
-                alt={project.title}
-                className="w-full h-full object-cover"
-                isVisible={isVisible}
-              />
-            ) : (
-              <div className="w-full h-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center">
-                <Music2 className="w-6 h-6 text-muted-foreground" />
-              </div>
+      <div className="flex items-start gap-3">
+        {/* Artwork */}
+        <div className="w-14 h-14 rounded-lg bg-muted overflow-hidden flex-shrink-0 ring-2 ring-transparent group-hover:ring-primary/20 transition-all">
+          {project.artworkPath ? (
+            <ArtworkImage
+              filePath={project.artworkPath}
+              alt={project.title}
+              className="w-full h-full object-cover"
+              isVisible={isVisible}
+            />
+          ) : (
+            <div className="w-full h-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center">
+              <Music2 className="w-6 h-6 text-muted-foreground" />
+            </div>
+          )}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <h4 className="font-semibold text-sm truncate group-hover:text-primary transition-colors">
+              {project.title}
+            </h4>
+            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  shared.onEdit(project);
+                }}
+              >
+                <Edit3 className="w-3 h-3" />
+              </Button>
+            </div>
+          </div>
+
+          {/* Project Meta */}
+          <div className="flex items-center gap-2 mt-1">
+            {project.bpm > 0 && (
+              <span className="text-xs text-muted-foreground">
+                {project.bpm} BPM
+              </span>
+            )}
+            {project.musicalKey && (
+              <>
+                <span className="text-muted-foreground">•</span>
+                <span className="text-xs text-muted-foreground">
+                  {project.musicalKey}
+                </span>
+              </>
+            )}
+            {(project.timeSpent ?? 0) > 0 && (
+              <>
+                <span className="text-muted-foreground">•</span>
+                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Clock className="w-3 h-3" />
+                  {formatTimeSpent(project.timeSpent || 0)}
+                </span>
+              </>
             )}
           </div>
 
-          {/* Content */}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-start justify-between gap-2">
-              <h4 className="font-semibold text-sm truncate group-hover:text-primary transition-colors">
-                {project.title}
-              </h4>
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    shared.onEdit(project);
-                  }}
-                >
-                  <Edit3 className="w-3 h-3" />
-                </Button>
-              </div>
-            </div>
-
-            {/* Project Meta */}
-            <div className="flex items-center gap-2 mt-1">
-              {project.bpm > 0 && (
-                <span className="text-xs text-muted-foreground">
-                  {project.bpm} BPM
-                </span>
+          {/* Genre & Artist */}
+          {(project.genre || project.artists) && (
+            <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground truncate">
+              {project.artists && (
+                <span className="truncate">{project.artists}</span>
               )}
-              {project.musicalKey && (
-                <>
-                  <span className="text-muted-foreground">•</span>
-                  <span className="text-xs text-muted-foreground">
-                    {project.musicalKey}
-                  </span>
-                </>
+              {project.artists && project.genre && (
+                <span className="text-muted-foreground/50">|</span>
               )}
-              {(project.timeSpent ?? 0) > 0 && (
-                <>
-                  <span className="text-muted-foreground">•</span>
-                  <span className="text-xs text-muted-foreground flex items-center gap-1">
-                    <Clock className="w-3 h-3" />
-                    {formatTimeSpent(project.timeSpent || 0)}
-                  </span>
-                </>
+              {project.genre && (
+                <span className="truncate">{project.genre}</span>
               )}
             </div>
+          )}
 
-            {/* Genre & Artist */}
-            {(project.genre || project.artists) && (
-              <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground truncate">
-                {project.artists && (
-                  <span className="truncate">{project.artists}</span>
-                )}
-                {project.artists && project.genre && (
-                  <span className="text-muted-foreground/50">|</span>
-                )}
-                {project.genre && (
-                  <span className="truncate">{project.genre}</span>
+          {/* Tags and DAW */}
+          <div className="flex items-center gap-1 mt-2">
+            {project.dawType && (
+              <Badge variant="outline" className="text-xs px-1.5 py-0.5">
+                {project.dawType}
+              </Badge>
+            )}
+            {project.tags && project.tags.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {project.tags.slice(0, 2).map((tag) => (
+                  <Badge key={tag} variant="secondary" className="text-xs px-1.5 py-0.5">
+                    {tag}
+                  </Badge>
+                ))}
+                {project.tags.length > 2 && (
+                  <Badge variant="secondary" className="text-xs px-1.5 py-0.5">
+                    +{project.tags.length - 2}
+                  </Badge>
                 )}
               </div>
             )}
-
-            {/* Tags and DAW */}
-            <div className="flex items-center gap-1 mt-2">
-              {project.dawType && (
-                <Badge variant="outline" className="text-xs px-1.5 py-0.5">
-                  {project.dawType}
-                </Badge>
-              )}
-              {project.tags && project.tags.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {project.tags.slice(0, 2).map((tag) => (
-                    <Badge key={tag} variant="secondary" className="text-xs px-1.5 py-0.5">
-                      {tag}
-                    </Badge>
-                  ))}
-                  {project.tags.length > 2 && (
-                    <Badge variant="secondary" className="text-xs px-1.5 py-0.5">
-                      +{project.tags.length - 2}
-                    </Badge>
-                  )}
-                </div>
-              )}
-            </div>
           </div>
         </div>
       </div>
@@ -561,7 +497,6 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
 
   // Kanban board ref for auto-scroll
   const kanbanBoardRef = useRef<HTMLDivElement>(null);
-  const autoScrollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Close context menu on outside click
   useEffect(() => {
@@ -788,13 +723,166 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
   const [isDragging, setIsDragging] = useState(false);
   const [draggedProjectIds, setDraggedProjectIds] = useState<Set<string>>(new Set());
 
+  // Mouse-based drag system refs
+  const dragRef = useRef<{
+    projectIds: Set<string>;
+    startX: number;
+    startY: number;
+    offsetX: number;
+    offsetY: number;
+    cardEl: HTMLElement;
+    ghost: HTMLElement | null;
+    activated: boolean;
+  } | null>(null);
+  const columnRefs = useRef<Map<ProjectStatus, HTMLElement>>(new Map());
+
+  const setColumnRef = useCallback((status: ProjectStatus, el: HTMLDivElement | null) => {
+    if (el) columnRefs.current.set(status, el);
+    else columnRefs.current.delete(status);
+  }, []);
+
+  const getColumnAtPoint = useCallback((x: number, y: number): ProjectStatus | null => {
+    for (const [status, el] of columnRefs.current.entries()) {
+      const rect = el.getBoundingClientRect();
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+        return status;
+      }
+    }
+    return null;
+  }, []);
+
+  // Stable refs for callbacks used in global listeners
+  const onRefreshRef = useRef(onRefresh);
+  const projectSortByRef = useRef(projectSortBy);
+  const projectsByStatusRef = useRef(projectsByStatus);
+  onRefreshRef.current = onRefresh;
+  projectSortByRef.current = projectSortBy;
+  projectsByStatusRef.current = projectsByStatus;
+
+  // Global mousemove + mouseup for drag
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+
+      if (!drag.activated) {
+        const dx = e.clientX - drag.startX;
+        const dy = e.clientY - drag.startY;
+        if (Math.sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD) return;
+
+        // Activate drag: create ghost
+        drag.activated = true;
+        const rect = drag.cardEl.getBoundingClientRect();
+        const ghost = drag.cardEl.cloneNode(true) as HTMLElement;
+        ghost.style.position = 'fixed';
+        ghost.style.left = `${rect.left}px`;
+        ghost.style.top = `${rect.top}px`;
+        ghost.style.width = `${rect.width}px`;
+        ghost.style.zIndex = '9999';
+        ghost.style.pointerEvents = 'none';
+        ghost.style.opacity = '0.92';
+        ghost.style.transform = 'rotate(2deg) scale(1.03)';
+        ghost.style.boxShadow = '0 12px 28px rgba(0,0,0,0.2)';
+        ghost.style.transition = 'transform 0.15s ease, box-shadow 0.15s ease';
+        ghost.style.borderRadius = '0.5rem';
+
+        // For multi-drag, add a badge showing count
+        if (drag.projectIds.size > 1) {
+          const badge = document.createElement('div');
+          badge.style.cssText = 'position:absolute;top:-8px;right:-8px;background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-radius:9999px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;box-shadow:0 2px 6px rgba(0,0,0,0.2);';
+          badge.textContent = String(drag.projectIds.size);
+          ghost.style.position = 'fixed';
+          ghost.appendChild(badge);
+        }
+
+        document.body.appendChild(ghost);
+        drag.ghost = ghost;
+
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'grabbing';
+        setIsDragging(true);
+        setDraggedProjectIds(drag.projectIds);
+      }
+
+      // Move ghost
+      if (drag.ghost) {
+        drag.ghost.style.left = `${e.clientX - drag.offsetX}px`;
+        drag.ghost.style.top = `${e.clientY - drag.offsetY}px`;
+      }
+
+      // Detect column hover
+      setDragOverColumn(getColumnAtPoint(e.clientX, e.clientY));
+
+      // Auto-scroll horizontally near edges
+      if (kanbanBoardRef.current) {
+        const rect = kanbanBoardRef.current.getBoundingClientRect();
+        const edgeThreshold = 100;
+        if (e.clientX < rect.left + edgeThreshold) {
+          kanbanBoardRef.current.scrollLeft -= 8;
+        } else if (e.clientX > rect.right - edgeThreshold) {
+          kanbanBoardRef.current.scrollLeft += 8;
+        }
+      }
+    };
+
+    const onMouseUp = async (e: MouseEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      dragRef.current = null;
+
+      if (drag.ghost) drag.ghost.remove();
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+
+      if (!drag.activated) {
+        setIsDragging(false);
+        setDragOverColumn(null);
+        setDraggedProjectIds(new Set());
+        return;
+      }
+
+      const targetColumn = getColumnAtPoint(e.clientX, e.clientY);
+      setIsDragging(false);
+      setDragOverColumn(null);
+      setDraggedProjectIds(new Set());
+
+      if (targetColumn && drag.projectIds.size > 0) {
+        try {
+          const targetColumnLen = projectsByStatusRef.current[targetColumn]?.length || 0;
+          await Promise.all(Array.from(drag.projectIds).map((id, i) =>
+            window.electron?.updateProject(id, {
+              status: targetColumn,
+              ...(projectSortByRef.current === 'custom' ? { sortOrder: targetColumnLen + i } : {}),
+            })
+          ));
+          await onRefreshRef.current();
+          setSelectedProjects(new Set());
+        } catch (error) {
+          console.error('Failed to move projects:', error);
+        }
+      }
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      if (dragRef.current?.ghost) {
+        dragRef.current.ghost.remove();
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+      }
+    };
+  }, [getColumnAtPoint]);
+
   // Shared ref for BoardCard — holds fast-changing state and callbacks.
   // Cards read from this ref at event time, so changes never trigger re-renders.
   const boardSharedRef = useRef<BoardSharedState>(null!) as React.MutableRefObject<BoardSharedState>;
   if (!boardSharedRef.current) {
     boardSharedRef.current = {
       selectedProjects, isDragging, draggedProjectIds, bulkEditMode,
-      onDragStart: () => {}, onDragEnd: () => {},
+      onMouseDown: () => {},
       onClick: () => {}, onContextMenu: () => {}, onEdit: () => {},
     };
   }
@@ -804,12 +892,9 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
   boardSharedRef.current.draggedProjectIds = draggedProjectIds;
   boardSharedRef.current.bulkEditMode = bulkEditMode;
   boardSharedRef.current.onEdit = handleEditProject;
-  boardSharedRef.current.onDragEnd = () => {
-    setIsDragging(false);
-    setDraggedProjectIds(new Set());
-  };
   boardSharedRef.current.onClick = (project: Project, e: React.MouseEvent) => {
-    if (e.ctrlKey) {
+    // Ctrl+click = toggle selection (multi-select)
+    if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       e.stopPropagation();
       if (!bulkEditMode) setBulkEditMode(true);
@@ -837,177 +922,34 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
     e.stopPropagation();
     setContextMenu({ x: e.clientX, y: e.clientY, project });
   };
-  boardSharedRef.current.onDragStart = (project: Project, e: React.DragEvent) => {
-    let projectIds: Set<string>;
-    if (selectedProjects.has(project.id) && selectedProjects.size > 1) {
-      projectIds = new Set(selectedProjects);
-    } else {
-      projectIds = new Set([project.id]);
-      if (!selectedProjects.has(project.id)) {
-        setSelectedProjects(new Set([project.id]));
-      }
-    }
-    setDraggedProjectIds(projectIds);
-    setIsDragging(true);
-    e.dataTransfer.setData('text/plain', JSON.stringify(Array.from(projectIds)));
-    e.dataTransfer.effectAllowed = 'move';
-    const dragCount = projectIds.size;
-    if (dragCount > 1) {
-      const dragPreview = document.createElement('div');
-      dragPreview.className = 'fixed pointer-events-none z-[9999] px-3 py-2 bg-primary text-primary-foreground rounded-lg shadow-lg font-medium text-sm flex items-center gap-2';
-      dragPreview.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg> ${t('scheduler.movingProjects', { count: String(dragCount) })}`;
-      dragPreview.style.transform = 'translate(-50%, -50%)';
-      document.body.appendChild(dragPreview);
-      e.dataTransfer.setDragImage(dragPreview, 75, 20);
-      setTimeout(() => { document.body.removeChild(dragPreview); }, 0);
-    }
-  };
+  boardSharedRef.current.onMouseDown = (project: Project, e: React.MouseEvent, cardEl: HTMLElement) => {
+    // Ctrl+click is for multi-select, not drag
+    if (e.ctrlKey || e.metaKey) return;
+    // In bulk edit mode, clicks are for selection
+    if (bulkEditMode) return;
 
-  // Auto-scroll during drag
-  const startAutoScroll = useCallback((direction: 'left' | 'right') => {
-    if (autoScrollIntervalRef.current) return;
-    
-    const scrollSpeed = 15;
-    autoScrollIntervalRef.current = setInterval(() => {
-      if (kanbanBoardRef.current) {
-        const scrollAmount = direction === 'right' ? scrollSpeed : -scrollSpeed;
-        kanbanBoardRef.current.scrollLeft += scrollAmount;
-      }
-    }, 16); // ~60fps
-  }, []);
+    const rect = cardEl.getBoundingClientRect();
 
-  const stopAutoScroll = useCallback(() => {
-    if (autoScrollIntervalRef.current) {
-      clearInterval(autoScrollIntervalRef.current);
-      autoScrollIntervalRef.current = null;
-    }
-  }, []);
+    // If this card is part of a multi-selection, drag all selected
+    const projectIds = selectedProjects.has(project.id) && selectedProjects.size > 1
+      ? new Set(selectedProjects)
+      : new Set([project.id]);
 
-  // Handle drag over for auto-scroll
-  const handleKanbanDragOver = useCallback((e: React.DragEvent) => {
-    // Must preventDefault on dragover to allow drops anywhere on the board
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    
-    if (!isDragging || !kanbanBoardRef.current) return;
-    
-    const rect = kanbanBoardRef.current.getBoundingClientRect();
-    const edgeThreshold = 100; // pixels from edge to trigger scroll
-    const mouseX = e.clientX;
-    
-    if (mouseX < rect.left + edgeThreshold) {
-      startAutoScroll('left');
-    } else if (mouseX > rect.right - edgeThreshold) {
-      startAutoScroll('right');
-    } else {
-      stopAutoScroll();
-    }
-  }, [isDragging, startAutoScroll, stopAutoScroll]);
-
-  // Clean up auto-scroll on drag end
-  useEffect(() => {
-    if (!isDragging) {
-      stopAutoScroll();
-    }
-  }, [isDragging, stopAutoScroll]);
-
-  // handleProjectDragStart and handleProjectDragEnd are on boardSharedRef.current
-
-  const handleProjectDragOver = (e: React.DragEvent, columnId: ProjectStatus) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverColumn(columnId);
-  };
-
-  const handleProjectDragLeave = (e: React.DragEvent) => {
-    // Only clear if we're actually leaving the column, not moving to a child element
-    const currentTarget = e.currentTarget as HTMLElement;
-    const relatedTarget = e.relatedTarget as HTMLElement | null;
-    if (!relatedTarget || !currentTarget.contains(relatedTarget)) {
-      setDragOverColumn(null);
-    }
-  };
-
-  const handleProjectDrop = async (e: React.DragEvent, targetStatus: ProjectStatus) => {
-    e.preventDefault();
-    setDragOverColumn(null);
-    setIsDragging(false);
-
-    // In custom sort mode, drops within columns are handled by VirtualizedColumn's onReorder.
-    // Column-level drops (changing status) still work here but append to the end.
-    let projectsToMove = draggedProjectIds.size > 0 ? draggedProjectIds : selectedProjects;
-    
-    // Fallback: read from dataTransfer if state is empty
-    if (projectsToMove.size === 0) {
-      try {
-        const data = e.dataTransfer.getData('text/plain');
-        if (data) {
-          const ids = JSON.parse(data) as string[];
-          projectsToMove = new Set(ids);
-        }
-      } catch {
-        // ignore parse errors
-      }
-    }
-    
-    if (projectsToMove.size === 0) return;
-
-    try {
-      // If custom sort, give moved projects a sortOrder at the end of the target column
-      const targetColumnLen = projectsByStatus[targetStatus]?.length || 0;
-      let orderOffset = targetColumnLen;
-
-      await Promise.all(Array.from(projectsToMove).map((id, i) =>
-        window.electron?.updateProject(id, {
-          status: targetStatus,
-          ...(projectSortBy === 'custom' ? { sortOrder: orderOffset + i } : {}),
-        })
-      ));
-      await onRefresh();
-      setSelectedProjects(new Set());
-      setDraggedProjectIds(new Set());
-    } catch (error) {
-      console.error('Failed to move projects:', error);
-    }
+    dragRef.current = {
+      projectIds,
+      startX: e.clientX,
+      startY: e.clientY,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+      cardEl,
+      ghost: null,
+      activated: false,
+    };
   };
 
   const clearProjectSelection = () => {
     setSelectedProjects(new Set());
   };
-
-  // Reorder a project within a column (custom sort mode)
-  const handleReorderInColumn = useCallback(async (columnId: ProjectStatus, projectId: string, targetIndex: number) => {
-    const columnProjects = [...projectsByStatus[columnId]];
-    const currentIndex = columnProjects.findIndex(p => p.id === projectId);
-    
-    // If the project isn't in this column yet, it's being moved from another column
-    if (currentIndex === -1) {
-      // Move to this column + set status
-      await window.electron?.updateProject(projectId, { status: columnId });
-      // Insert at the target position
-      columnProjects.splice(targetIndex, 0, projects.find(p => p.id === projectId)!);
-    } else {
-      // Same column reorder: remove from old position, insert at new
-      const [moved] = columnProjects.splice(currentIndex, 1);
-      const adjustedTarget = targetIndex > currentIndex ? targetIndex - 1 : targetIndex;
-      columnProjects.splice(adjustedTarget, 0, moved);
-    }
-
-    // Assign new sort_order values for all projects in this column
-    const reorderData = columnProjects.map((p, i) => ({
-      id: p.id,
-      sortOrder: i,
-    }));
-
-    try {
-      await window.electron?.reorderProjects(reorderData);
-      await onRefresh();
-    } catch (error) {
-      console.error('Failed to reorder projects:', error);
-    }
-    setDraggedProjectIds(new Set());
-    setIsDragging(false);
-  }, [projectsByStatus, projects, onRefresh]);
 
   const bulkUpdateProjects = async (updates: Partial<Project>) => {
     try {
@@ -1351,165 +1293,174 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
             </AnimatePresence>
           </motion.div>
 
-          {/* Bulk Edit Bar for Projects */}
-          {bulkEditMode && (
-            <motion.div
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="px-6 py-3 border-b border-border/30 bg-background/95 backdrop-blur-sm sticky top-0 z-20"
-            >
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-medium">
-                  {t('scheduler.selectedBulk', { count: String(selectedProjects.size) })}
-                </span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    const allVisibleProjects = projects.filter(project => {
-                      // Apply current filters
-                      if (projectSearchQuery && !project.title.toLowerCase().includes(projectSearchQuery.toLowerCase())) return false;
-                      if (projectDawFilter.length > 0 && !projectDawFilter.includes(project.dawType || '')) return false;
-                      return true;
-                    });
-                    setSelectedProjects(new Set(allVisibleProjects.map(p => p.id)));
-                  }}
-                  className="gap-2"
-                >
-                  <CheckSquare className="w-4 h-4" />
-                  Select All
-                </Button>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button size="sm" variant="outline" className="gap-2">
-                      <ArrowRight className="w-4 h-4" />
-                      {t('scheduler.moveTo')}
-                      <ChevronDown className="w-4 h-4 opacity-50" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent>
-                    {PROJECT_COLUMNS.filter(column => column.id !== 'archived' || showArchivedProjects).map((column) => (
-                      <DropdownMenuItem
-                        key={column.id}
-                        onClick={() => bulkUpdateProjects({ status: column.id })}
-                        className="gap-2"
-                      >
-                        <span className={column.color}>{column.icon}</span>
-                        {statusLabel(column.id)}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => bulkUpdateProjects({ status: 'archived' })}
-                  className="gap-2"
-                >
-                  <Archive className="w-4 h-4" />
-                  {t('scheduler.archive')}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  onClick={() => {
-                    if (confirm(`Delete ${selectedProjects.size} project${selectedProjects.size > 1 ? 's' : ''}?`)) {
-                      selectedProjects.forEach(async (projectId) => {
-                        await window.electron?.deleteProject(projectId);
+          {/* Bulk Edit Bar — inline with smooth animation */}
+          <AnimatePresence>
+            {bulkEditMode && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+                className="overflow-hidden"
+              >
+                <div className="px-6 py-2.5 border-b border-border/30 bg-muted/50 flex items-center gap-3">
+                  <span className="text-sm font-medium whitespace-nowrap">
+                    {t('scheduler.selectedBulk', { count: String(selectedProjects.size) })}
+                  </span>
+                  <div className="h-5 w-px bg-border" />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const allVisibleProjects = projects.filter(project => {
+                        if (projectSearchQuery && !project.title.toLowerCase().includes(projectSearchQuery.toLowerCase())) return false;
+                        if (projectDawFilter.length > 0 && !projectDawFilter.includes(project.dawType || '')) return false;
+                        return true;
                       });
-                      onRefresh();
-                      clearProjectSelection();
-                      setBulkEditMode(false);
-                    }
-                  }}
-                  className="gap-2"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  {t('common.delete')}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setBulkEditMode(false)}
-                >
-                  {t('common.cancel')}
-                </Button>
-              </div>
-            </motion.div>
-          )}
+                      setSelectedProjects(new Set(allVisibleProjects.map(p => p.id)));
+                    }}
+                    className="gap-1.5 h-7 text-xs"
+                  >
+                    <CheckSquare className="w-3.5 h-3.5" />
+                    Select All
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button size="sm" variant="outline" className="gap-1.5 h-7 text-xs">
+                        <ArrowRight className="w-3.5 h-3.5" />
+                        {t('scheduler.moveTo')}
+                        <ChevronDown className="w-3.5 h-3.5 opacity-50" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent>
+                      {PROJECT_COLUMNS.filter(column => column.id !== 'archived' || showArchivedProjects).map((column) => (
+                        <DropdownMenuItem
+                          key={column.id}
+                          onClick={() => bulkUpdateProjects({ status: column.id })}
+                          className="gap-2"
+                        >
+                          <span className={column.color}>{column.icon}</span>
+                          {statusLabel(column.id)}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={(e) => { e.stopPropagation(); bulkUpdateProjects({ status: 'archived' }); }}
+                    className="gap-1.5 h-7 text-xs"
+                  >
+                    <Archive className="w-3.5 h-3.5" />
+                    {t('scheduler.archive')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm(`Delete ${selectedProjects.size} project${selectedProjects.size > 1 ? 's' : ''}?`)) {
+                        selectedProjects.forEach(async (projectId) => {
+                          await window.electron?.deleteProject(projectId);
+                        });
+                        onRefresh();
+                        clearProjectSelection();
+                        setBulkEditMode(false);
+                      }
+                    }}
+                    className="gap-1.5 h-7 text-xs"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    {t('common.delete')}
+                  </Button>
+                  <div className="h-5 w-px bg-border" />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={(e) => { e.stopPropagation(); setBulkEditMode(false); clearProjectSelection(); }}
+                    className="h-7 w-7 p-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Project Columns */}
-            <div 
-              ref={kanbanBoardRef}
-              className="flex-1 p-6 overflow-x-auto overflow-y-hidden" 
-              onClick={() => setSelectedProjects(new Set())}
-              onDragOver={handleKanbanDragOver}
-              onDragLeave={stopAutoScroll}
-              onDrop={(e) => { e.preventDefault(); stopAutoScroll(); }}
-            >
-              <div className="flex gap-4 min-w-max pb-4 h-full">
-                {PROJECT_COLUMNS.filter(column => column.id !== 'archived' || showArchivedProjects).map((column) => (
-                  <div
-                    key={column.id}
-                    className={cn(
-                      "w-[320px] flex flex-col rounded-xl border transition-all duration-200 h-full",
-                      dragOverColumn === column.id
-                        ? "border-primary/50 bg-primary/5"
-                        : "border-border/30 bg-card/30"
-                    )}
-                    style={{
-                      touchAction: 'pan-y'
-                    }}
-                    onDragOver={(e) => handleProjectDragOver(e, column.id)}
-                    onDragLeave={(e) => handleProjectDragLeave(e)}
-                    onDrop={(e) => handleProjectDrop(e, column.id)}
-                  >
-                    {/* Column Header */}
-                    <div className={cn("p-4 border-b border-border/30", column.bgColor)}>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className={column.color}>{column.icon}</span>
-                          <h3 className="font-medium text-sm">{statusLabel(column.id)}</h3>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge variant="secondary" className="text-xs">
-                            {projectsByStatus[column.id].length}
-                          </Badge>
-                          {bulkEditMode && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-6 w-6 p-0 opacity-60 hover:opacity-100"
-                              onClick={() => {
-                                const columnProjects = projectsByStatus[column.id];
-                                setSelectedProjects(prev => {
-                                  const newSet = new Set(prev);
-                                  columnProjects.forEach(project => newSet.add(project.id));
-                                  return newSet;
-                                });
-                              }}
-                              title={t('scheduler.selectAllColumn', { title: statusLabel(column.id) })}
-                            >
-                              <CheckSquare className="w-3 h-3" />
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
+            <div className="flex-1 overflow-hidden">
+              <div
+                ref={kanbanBoardRef}
+                className={cn("h-full p-6 overflow-x-auto overflow-y-hidden", isDragging && "select-none")}
+                onClick={() => setSelectedProjects(new Set())}
+              >
+                <div className="flex gap-4 min-w-max pb-4 h-full">
+                  {PROJECT_COLUMNS.filter(column => column.id !== 'archived' || showArchivedProjects).map((column) => {
+                    const colProjects = projectsByStatus[column.id];
+                    const allSelected = colProjects.length > 0 && colProjects.every(p => selectedProjects.has(p.id));
 
-                    {/* Project Cards — virtualized */}
-                    <VirtualizedColumn
-                      projects={projectsByStatus[column.id]}
-                      selectedProjects={selectedProjects}
-                      observer={boardObserver}
-                      sharedRef={boardSharedRef}
-                      itemHeight={108}
-                      overscan={5}
-                      isCustomSort={projectSortBy === 'custom'}
-                      onReorder={(projectId, targetIndex) => handleReorderInColumn(column.id, projectId, targetIndex)}
-                    />
-                  </div>
-                ))}
+                    return (
+                      <div
+                        key={column.id}
+                        ref={(el) => setColumnRef(column.id, el)}
+                        className={cn(
+                          "w-[320px] flex flex-col rounded-xl border transition-all duration-200 h-full",
+                          dragOverColumn === column.id
+                            ? "border-primary/50 bg-primary/5 ring-2 ring-primary/50"
+                            : "border-border/30 bg-card/30"
+                        )}
+                      >
+                        {/* Column Header */}
+                        <div className={cn("p-4 border-b border-border/30", column.bgColor)}>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className={column.color}>{column.icon}</span>
+                              <h3 className="font-medium text-sm">{statusLabel(column.id)}</h3>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {bulkEditMode && colProjects.length > 0 && (
+                                <Button
+                                  variant={allSelected ? "default" : "outline"}
+                                  size="sm"
+                                  className="h-6 px-2 text-[10px] gap-1"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedProjects(prev => {
+                                      const newSet = new Set(prev);
+                                      if (allSelected) {
+                                        colProjects.forEach(p => newSet.delete(p.id));
+                                      } else {
+                                        colProjects.forEach(p => newSet.add(p.id));
+                                      }
+                                      return newSet;
+                                    });
+                                  }}
+                                >
+                                  <CheckSquare className="w-3 h-3" />
+                                  {allSelected ? 'Deselect' : 'Select'} All
+                                </Button>
+                              )}
+                              <Badge variant="secondary" className="text-xs">
+                                {colProjects.length}
+                              </Badge>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Project Cards — virtualized */}
+                        <VirtualizedColumn
+                          projects={colProjects}
+                          selectedProjects={selectedProjects}
+                          observer={boardObserver}
+                          sharedRef={boardSharedRef}
+                          itemHeight={108}
+                          overscan={5}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
         </div>
@@ -1773,6 +1724,7 @@ export const Scheduler: React.FC<SchedulerProps> = ({ projects, onRefresh, setti
           </button>
         </div>
       )}
+
     </div>
   );
 

@@ -13,8 +13,8 @@ export function Hero() {
       <div className="gradient-blob w-[600px] h-[600px] bg-primary/[0.07] -top-[200px] -left-[200px]" />
       <div className="gradient-blob w-[500px] h-[500px] bg-violet-500/[0.05] top-[100px] right-[-100px]" />
 
-      <div className="mx-auto max-w-[1200px] px-6 pt-32 pb-20 w-full relative z-10">
-        <div className="grid lg:grid-cols-[1.1fr_0.9fr] gap-12 lg:gap-16 items-center">
+      <div className="mx-auto max-w-350 px-6 pt-32 pb-20 w-full relative z-10">
+        <div className="grid lg:grid-cols-[1fr_1.3fr] gap-12 lg:gap-20 items-center">
           {/* Left — copy */}
           <motion.div
             initial={{ opacity: 0, y: 30 }}
@@ -25,7 +25,7 @@ export function Hero() {
               variant="outline"
               className="mb-6 px-3 py-1 text-[11px] font-medium tracking-wide border-primary/30 text-primary bg-primary/5"
             >
-              v1.0 — Now Available for Windows & Mac
+              v1.0 — Windows · macOS Coming Soon
             </Badge>
 
             <h1 className="text-[clamp(2.5rem,5vw,4.25rem)] font-semibold leading-[1.05] tracking-[-0.03em] mb-6">
@@ -58,16 +58,16 @@ export function Hero() {
                 size="lg"
                 className="h-11 px-6 text-sm font-medium border-border/60 hover:bg-accent"
               >
-                <Link href="#pricing">
-                  View Pricing
+                <Link href="https://github.com/PvlsOfficial/dbundone" target="_blank" rel="noopener noreferrer">
+                  View on GitHub
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </Link>
               </Button>
             </div>
 
             <p className="mt-4 text-xs text-muted-foreground/60">
-              Windows 10+ & macOS 12+ &middot; Free tier available &middot; No
-              account required
+              Windows 10+ &middot; Free &amp; open source &middot; No account
+              required
             </p>
           </motion.div>
 
@@ -86,29 +86,14 @@ export function Hero() {
             {/* Ambient glow */}
             <div className="absolute -inset-8 bg-primary/[0.08] rounded-3xl blur-3xl" />
 
-            {/* Window frame */}
-            <div className="window-frame relative">
-              <div className="window-frame-bar">
-                <div className="window-dot bg-[#ff5f57]" />
-                <div className="window-dot bg-[#febc2e]" />
-                <div className="window-dot bg-[#28c840]" />
-                <span className="ml-3 text-[11px] text-muted-foreground/50 font-mono">
-                  DBundone
-                </span>
-              </div>
-              <div className="aspect-[16/10] bg-muted/30 flex items-center justify-center">
-                <div className="text-center p-8">
-                  <div className="w-16 h-16 mx-auto mb-4 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center">
-                    <span className="text-2xl font-bold text-primary">D</span>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    Dashboard screenshot
-                  </p>
-                  <p className="text-xs text-muted-foreground/50 mt-1">
-                    1200 &times; 800px recommended
-                  </p>
-                </div>
-              </div>
+            {/* Screenshot */}
+            <div className="relative rounded-xl overflow-hidden border border-border/40 shadow-2xl">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/screenshots/dashboard.png"
+                alt="DBundone dashboard"
+                className="w-full h-auto block"
+              />
             </div>
           </motion.div>
         </div>

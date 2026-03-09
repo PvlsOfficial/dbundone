@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   BarChart3,
   Clock,
-  Music,
   RefreshCw,
   Plug,
   FileAudio,
@@ -15,6 +14,19 @@ import {
   Layers,
   Loader2,
   Search,
+  Users,
+  FolderOpen,
+  Hash,
+  Target,
+  Zap,
+  ChevronRight,
+  Calendar,
+  Disc3,
+  Star,
+  Trophy,
+  Activity,
+  GitBranch,
+  X,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -173,6 +185,55 @@ const Heatmap: React.FC<{ projects: Project[] }> = ({ projects }) => {
   );
 };
 
+// ── Mini sparkline bar chart ──────────────────────────
+const MiniBarChart: React.FC<{
+  data: number[];
+  labels?: string[];
+  height?: number;
+  color?: string;
+}> = ({ data, labels, height = 60, color = 'hsl(var(--primary))' }) => {
+  const maxVal = Math.max(...data, 1);
+  return (
+    <TooltipProvider delayDuration={80}>
+      <div className="flex items-end gap-[3px]" style={{ height }}>
+        {data.map((val, i) => (
+          <Tooltip key={i}>
+            <TooltipTrigger asChild>
+              <div
+                className="flex-1 rounded-t-sm transition-all duration-300 min-w-[4px] hover:opacity-80"
+                style={{
+                  height: `${Math.max((val / maxVal) * 100, 2)}%`,
+                  backgroundColor: val > 0 ? color : 'hsl(var(--secondary))',
+                }}
+              />
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-xs py-1 px-2">
+              {labels?.[i] ?? `#${i + 1}`}: {val}
+            </TooltipContent>
+          </Tooltip>
+        ))}
+      </div>
+    </TooltipProvider>
+  );
+};
+
+// ── Stat number with label ──────────────────────────
+const StatNumber: React.FC<{
+  label: string;
+  value: string | number;
+  sub?: string;
+  icon?: React.ReactNode;
+}> = ({ label, value, sub, icon }) => (
+  <div>
+    <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
+      {icon}
+      {label}
+    </div>
+    <p className="text-2xl font-semibold tracking-tight">{value}</p>
+    {sub && <p className="text-xs text-muted-foreground mt-1">{sub}</p>}
+  </div>
+);
+
 // ════════════════════════════════════════
 //  MAIN COMPONENT
 // ════════════════════════════════════════
@@ -185,6 +246,16 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
   const [analysisProgress, setAnalysisProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   const [sampleTree, setSampleTree] = useState<Record<string, string[]>>({});
 
+  // UI state
+  const [pluginSearch, setPluginSearch] = useState('');
+  const [pluginTypeFilter, setPluginTypeFilter] = useState<'all' | 'instrument' | 'effect' | 'sampler'>('all');
+  const [pluginSort, setPluginSort] = useState<'count' | 'name' | 'projects'>('count');
+  const [expandedPlugin, setExpandedPlugin] = useState<string | null>(null);
+  const [explorerQuery, setExplorerQuery] = useState('');
+  const [explorerCategory, setExplorerCategory] = useState<'all' | 'plugins' | 'samples' | 'packs' | 'mixer'>('all');
+  const [explorerSort, setExplorerSort] = useState<'count' | 'name'>('count');
+  const [activeTab, setActiveTab] = useState('overview');
+
   // ── Load sample folder tree from filesystem ─────────────
   useEffect(() => {
     if (settings.sampleFolders.length > 0) {
@@ -196,7 +267,7 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
     }
   }, [settings.sampleFolders]);
 
-  // ── Load FLP analyses — fast cache first, then background re-analyze new projects ──
+  // ── Load FLP analyses ──
   const loadAnalyses = useCallback(async (force = false) => {
     const flProjects = projects.filter(p => p.dawType === 'FL Studio' && p.dawProjectPath);
     if (flProjects.length === 0) {
@@ -205,14 +276,11 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
     }
 
     if (!force) {
-      // Fast path: load everything from DB cache in one call
       try {
-        const cached = await (window.electron?.getAllFlpAnalysesCached?.() ?? getAllFlpAnalysesCached());
+        const cached = await ((window.electron as any)?.getAllFlpAnalysesCached?.() ?? getAllFlpAnalysesCached());
         if (cached && Object.keys(cached).length > 0) {
           setAnalysisMap(cached as Record<string, FlpAnalysis>);
           setIsDataReady(true);
-
-          // Background: find projects missing from cache and analyze them
           const uncached = flProjects.filter(p => !cached[p.id]);
           if (uncached.length > 0) {
             setAnalysisProgress({ current: 0, total: uncached.length });
@@ -233,11 +301,10 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
           return;
         }
       } catch (err) {
-        console.warn('[Statistics] Cache load failed, falling back to per-project analysis:', err);
+        console.warn('[Statistics] Cache load failed:', err);
       }
     }
 
-    // Full (re-)analysis path — used on first run or when forced by refresh button
     setAnalysisProgress({ current: 0, total: flProjects.length });
     const map: Record<string, FlpAnalysis> = {};
     for (let i = 0; i < flProjects.length; i++) {
@@ -266,23 +333,45 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
     setIsRefreshing(false);
   };
 
+  // ── Project name lookup ──
+  const projectNameMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const p of projects) map[p.id] = p.title;
+    return map;
+  }, [projects]);
+
   // ── Aggregate FLP analysis data across all projects ───────
   const analysisStats = useMemo(() => {
     const analyses = Object.values(analysisMap);
 
     // ─ Plugin rankings ──────────────────────
-    const pluginUsage: Record<string, { count: number; isInstrument: boolean; isSampler: boolean; projects: Set<string> }> = {};
+    const pluginUsage: Record<string, {
+      count: number;
+      isInstrument: boolean;
+      isSampler: boolean;
+      projects: Set<string>;
+      presets: Set<string>;
+      channelNames: Set<string>;
+    }> = {};
     const pluginTypeCount = { instruments: 0, effects: 0, samplers: 0 };
     let totalPluginInstances = 0;
 
+    // Plugin co-occurrence
+    const projectPluginSets: Record<string, Set<string>> = {};
+
     for (const [pid, a] of Object.entries(analysisMap)) {
+      if (!projectPluginSets[pid]) projectPluginSets[pid] = new Set();
+
       for (const plugin of a.plugins) {
         const isSampler = plugin.dllName === 'Sampler';
         if (!pluginUsage[plugin.name]) {
-          pluginUsage[plugin.name] = { count: 0, isInstrument: plugin.isInstrument, isSampler, projects: new Set() };
+          pluginUsage[plugin.name] = { count: 0, isInstrument: plugin.isInstrument, isSampler, projects: new Set(), presets: new Set(), channelNames: new Set() };
         }
         pluginUsage[plugin.name].count++;
         pluginUsage[plugin.name].projects.add(pid);
+        if (plugin.presetName) pluginUsage[plugin.name].presets.add(plugin.presetName);
+        if (plugin.channelName) pluginUsage[plugin.name].channelNames.add(plugin.channelName);
+        projectPluginSets[pid].add(plugin.name);
         totalPluginInstances++;
       }
     }
@@ -295,7 +384,14 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
     }
 
     const pluginRanking = Object.entries(pluginUsage)
-      .map(([name, data]) => ({ name, ...data, projectCount: data.projects.size }))
+      .map(([name, data]) => ({
+        name,
+        ...data,
+        projectCount: data.projects.size,
+        presetList: [...data.presets],
+        channelList: [...data.channelNames],
+        projectNames: [...data.projects].map(pid => projectNameMap[pid] || pid),
+      }))
       .sort((a, b) => b.count - a.count);
 
     const topPlugins = pluginRanking.slice(0, 15);
@@ -307,17 +403,36 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
     const favoriteInstrument = topInstruments.length > 0 ? topInstruments[0] : null;
     const favoriteEffect = topEffects.length > 0 ? topEffects[0] : null;
 
+    // ─ Plugin co-occurrence ──────────────────
+    const coOccurrence: Record<string, number> = {};
+    const pluginSetsArr = Object.values(projectPluginSets);
+    for (const pSet of pluginSetsArr) {
+      const arr = [...pSet];
+      for (let i = 0; i < arr.length; i++) {
+        for (let j = i + 1; j < arr.length; j++) {
+          const key = [arr[i], arr[j]].sort().join(' + ');
+          coOccurrence[key] = (coOccurrence[key] || 0) + 1;
+        }
+      }
+    }
+    const topCoOccurrence = Object.entries(coOccurrence)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 15);
+
     // ─ Mixer stats ──────────────────────────
     let totalMixerTracks = 0;
     let totalMixerEffects = 0;
     let maxMixerEffectsOnTrack = 0;
     let maxMixerEffectsTrackName = '';
     const mixerEffectUsage: Record<string, number> = {};
+    const mixerChainLengths: number[] = [];
 
     for (const a of analyses) {
       totalMixerTracks += a.mixerTracks.length;
       for (const mt of a.mixerTracks) {
         totalMixerEffects += mt.plugins.length;
+        if (mt.plugins.length > 0) mixerChainLengths.push(mt.plugins.length);
         if (mt.plugins.length > maxMixerEffectsOnTrack) {
           maxMixerEffectsOnTrack = mt.plugins.length;
           maxMixerEffectsTrackName = mt.name || `Insert ${mt.index}`;
@@ -335,6 +450,24 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
 
     const avgMixerTracksPerProject = analyses.length > 0 ? totalMixerTracks / analyses.length : 0;
     const avgMixerEffectsPerProject = analyses.length > 0 ? totalMixerEffects / analyses.length : 0;
+    const avgEffectsPerMixerTrack = mixerChainLengths.length > 0
+      ? mixerChainLengths.reduce((a, b) => a + b, 0) / mixerChainLengths.length : 0;
+    const sortedChains = [...mixerChainLengths].sort((a, b) => a - b);
+    const medianEffectsPerTrack = sortedChains.length > 0
+      ? sortedChains[Math.floor(sortedChains.length / 2)] : 0;
+
+    // ─ Per-project complexity ────────────────
+    const projectComplexity = Object.entries(analysisMap).map(([pid, a]) => ({
+      id: pid,
+      name: projectNameMap[pid] || pid,
+      plugins: a.plugins.length,
+      channels: a.channels.length,
+      patterns: a.patterns.length,
+      mixerTracks: a.mixerTracks.length,
+      samples: a.samples.length,
+      mixerEffects: a.mixerTracks.reduce((sum, mt) => sum + mt.plugins.length, 0),
+      score: a.plugins.length + a.channels.length + a.patterns.length + a.mixerTracks.length + a.samples.length,
+    })).sort((a, b) => b.score - a.score);
 
     // ─ Channel stats ────────────────────────
     let totalChannels = 0;
@@ -352,19 +485,7 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
     let totalSamples = 0;
     const samplePackUsage: Record<string, number> = {};
     const sampleExtUsage: Record<string, number> = {};
-    // Track individual sample file usage across all projects (by filename)
     const sampleFileUsage: Record<string, { count: number; projects: Set<string> }> = {};
-
-    // ── Smart sample pack detection ──────────────────────────
-    // Uses the REAL filesystem tree (from settings.sampleFolders scan)
-    // to detect organizational folders by their actual child count.
-    //
-    // Algorithm: for each sample path, walk top-down through the folder
-    // hierarchy. Skip a folder if ANY of these is true:
-    //   1. It's a known sound category / genre name
-    //   2. The REAL filesystem shows it has ≥5 non-category sub-folders
-    //   3. Its child folder name starts with the parent name (brand grouping)
-    // First folder that passes none of these checks = the pack.
 
     const SOUND_CATEGORIES = new Set([
       'kicks', 'kick', 'snares', 'snare', 'claps', 'clap',
@@ -397,42 +518,30 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       const lower = name.toLowerCase().trim();
       if (SOUND_CATEGORIES.has(lower)) return true;
       const words = lower.split(/[\s_\-]+/);
-      // Require ALL words to be category terms — prevents false positives
-      // like "Drum Industry" where only "drum" matches.
-      // Full multi-word categories ("hi hats", "sub bass") are already
-      // caught by the exact-match check above.
       if (words.length <= 2 && words.every(w =>
         SOUND_CATEGORIES.has(w) || SOUND_CATEGORIES.has(w + 's') || SOUND_CATEGORIES.has(w.replace(/s$/, ''))
       )) return true;
       return false;
     };
 
-    // Build a lookup: normalized folder path → real child count (non-category)
-    // The sampleTree keys are full paths like "C:/Users/.../Samples/! GO TO"
-    // with values being arrays of child folder names.
     const fsChildCount: Record<string, number> = {};
     const FS_ORG_THRESHOLD = 5;
     const hasFsTree = Object.keys(sampleTree).length > 0;
 
     if (hasFsTree) {
       for (const [folderPath, children] of Object.entries(sampleTree)) {
-        // Use JUST the folder name as key (last segment)
         const segments = folderPath.split('/');
         const folderName = segments[segments.length - 1];
         const nonCatChildren = children.filter(c => !isSoundCategory(c));
-        // Track by full path AND by folder name (folder name may collide, use max)
         const fullKey = folderPath.toLowerCase();
         fsChildCount[fullKey] = nonCatChildren.length;
-        // Also index by folder name for path-based lookups
         const nameKey = 'name:' + folderName.toLowerCase();
         fsChildCount[nameKey] = Math.max(fsChildCount[nameKey] || 0, nonCatChildren.length);
       }
     }
 
-    // Helper: build the full path for a folder in the sample tree
     const isOrgFolder = (folderName: string, pathSoFar: string[]): boolean => {
       if (hasFsTree) {
-        // Try exact path match first
         for (const root of settings.sampleFolders) {
           const normalized = root.replace(/\\/g, '/');
           const fullPath = (normalized + '/' + pathSoFar.join('/')).toLowerCase();
@@ -440,7 +549,6 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
             return fsChildCount[fullPath] >= FS_ORG_THRESHOLD;
           }
         }
-        // Fall back to name-based lookup
         const nameKey = 'name:' + folderName.toLowerCase();
         if (fsChildCount[nameKey] !== undefined) {
           return fsChildCount[nameKey] >= FS_ORG_THRESHOLD;
@@ -449,7 +557,6 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       return false;
     };
 
-    // Collect folder hierarchy from sample paths (for prefix detection)
     const normalizedCats = new Set(
       [...SOUND_CATEGORIES].map(c => c.replace(/[^a-z0-9]/g, ''))
     );
@@ -460,7 +567,6 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
         const normalized = s.replace(/\\/g, '/');
         const parts = normalized.split('/').filter(Boolean);
 
-        // Track individual sample file usage (by filename)
         const sampleFileName = parts[parts.length - 1];
         if (sampleFileName) {
           if (!sampleFileUsage[sampleFileName]) {
@@ -470,31 +576,28 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
           sampleFileUsage[sampleFileName].projects.add(pid);
         }
 
-        // Find sample folder root from settings, or fall back to "Samples" marker
         let afterRoot: string[] | null = null;
 
         if (hasFsTree) {
-          // Match against configured sample roots
           for (const root of settings.sampleFolders) {
             const normRoot = root.replace(/\\/g, '/').replace(/\/$/, '');
             if (normalized.toLowerCase().startsWith(normRoot.toLowerCase() + '/')) {
               const rest = normalized.slice(normRoot.length + 1);
               const restParts = rest.split('/').filter(Boolean);
-              afterRoot = restParts.slice(0, -1); // folders only, no filename
+              afterRoot = restParts.slice(0, -1);
               break;
             }
           }
         }
 
         if (!afterRoot) {
-          // Fallback: find "Samples" or similar marker in path
           const ROOT_MARKERS = new Set(['samples', 'packs', 'sample packs', 'drumkits']);
           let rootIdx = -1;
           for (let i = 0; i < parts.length; i++) {
             if (ROOT_MARKERS.has(parts[i].toLowerCase())) { rootIdx = i; break; }
           }
           if (rootIdx === -1 || rootIdx >= parts.length - 2) {
-            totalSamples--; // undo the count
+            totalSamples--;
             continue;
           }
           afterRoot = parts.slice(rootIdx + 1, parts.length - 1);
@@ -503,28 +606,23 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
         if (afterRoot.length === 0) continue;
         if (SKIP_ROOTS.has(afterRoot[0].toLowerCase())) continue;
 
-        // Extension tracking
         const ext = s.split('.').pop()?.toLowerCase() || 'unknown';
         sampleExtUsage[ext] = (sampleExtUsage[ext] || 0) + 1;
 
-        // ── Top-down walk to find pack ──
         let i = 0;
         while (i < afterRoot.length - 1) {
           const folder = afterRoot[i];
           const nextFolder = afterRoot[i + 1];
 
-          // 1) Sound category used as org folder
           if (isSoundCategory(folder)) {
             const hasNonCatAhead = afterRoot.slice(i + 1).some(f => !isSoundCategory(f));
             if (hasNonCatAhead) { i++; continue; }
           }
 
-          // 2) Org folder: real FS shows ≥5 non-category children
           if (isOrgFolder(folder, afterRoot.slice(0, i + 1))) {
             i++; continue;
           }
 
-          // 3) Brand/prefix: child starts with parent name
           const currNorm = folder.toLowerCase().replace(/[^a-z0-9]/g, '');
           const nextNorm = nextFolder.toLowerCase().replace(/[^a-z0-9]/g, '');
           if (currNorm.length >= 3 && nextNorm.startsWith(currNorm)) {
@@ -534,7 +632,7 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
             }
           }
 
-          break; // this is the pack
+          break;
         }
 
         const packName = afterRoot[i];
@@ -551,18 +649,20 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       .sort((a, b) => b.value - a.value)
       .slice(0, 12);
 
+    const allSamplePacks = Object.entries(samplePackUsage)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+
     const sampleFormats = Object.entries(sampleExtUsage)
       .map(([name, value]) => ({ name: name.toUpperCase(), value }))
       .sort((a, b) => b.value - a.value);
 
-    // ─ Most used individual samples ─────────
     const topSamples = Object.entries(sampleFileUsage)
-      .filter(([, d]) => d.projects.size >= 2) // Only samples used in 2+ projects
+      .filter(([, d]) => d.projects.size >= 2)
       .map(([name, d]) => ({ name, value: d.count, projectCount: d.projects.size }))
       .sort((a, b) => b.projectCount - a.projectCount || b.value - a.value)
       .slice(0, 20);
 
-    // All individual sample filenames for explorer search (including single-project samples)
     const allSamples = Object.entries(sampleFileUsage)
       .map(([name, d]) => ({ name, value: d.count, projectCount: d.projects.size }))
       .sort((a, b) => b.value - a.value);
@@ -584,10 +684,13 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       .map(([name, value]) => ({ name: `FL ${name}`, value }))
       .sort((a, b) => b.value - a.value);
 
-    // ─ Per-project plugin count trend ───────
     const pluginCountPerProject = Object.values(analysisMap).map(a => a.plugins.length);
     const channelCountPerProject = Object.values(analysisMap).map(a => a.channels.length);
     const mixerCountPerProject = Object.values(analysisMap).map(a => a.mixerTracks.length);
+
+    // ─ Unique presets total ────────────────
+    const allPresets = new Set<string>();
+    for (const p of pluginRanking) p.presetList.forEach(pr => allPresets.add(pr));
 
     return {
       analyzedCount: analyses.length,
@@ -602,6 +705,7 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       favoritePlugin,
       favoriteInstrument,
       favoriteEffect,
+      topCoOccurrence,
       totalMixerTracks,
       totalMixerEffects,
       maxMixerEffectsOnTrack,
@@ -609,12 +713,15 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       topMixerEffects,
       avgMixerTracksPerProject,
       avgMixerEffectsPerProject,
+      avgEffectsPerMixerTrack,
+      medianEffectsPerTrack,
       totalChannels,
       channelTypeCounts,
       avgChannelsPerProject,
       totalSamples,
       avgSamplesPerProject,
       topSamplePacks,
+      allSamplePacks,
       topSamples,
       allSamples,
       sampleFormats,
@@ -624,8 +731,10 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       pluginCountPerProject,
       channelCountPerProject,
       mixerCountPerProject,
+      projectComplexity,
+      totalPresets: allPresets.size,
     };
-  }, [analysisMap, sampleTree, settings.sampleFolders]);
+  }, [analysisMap, sampleTree, settings.sampleFolders, projectNameMap]);
 
   // ── Basic project stats ───────────────────────────
   const stats = useMemo(() => {
@@ -660,7 +769,7 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       if (p.musicalKey && p.musicalKey !== 'Unknown') acc[p.musicalKey] = (acc[p.musicalKey] || 0) + 1;
       return acc;
     }, {} as Record<string, number>);
-    const topKeys = Object.entries(keyStats).sort(([, a], [, b]) => b - a).slice(0, 8);
+    const topKeys = Object.entries(keyStats).sort(([, a], [, b]) => b - a).slice(0, 12);
 
     const projectsWithTimeData = projects.filter(p => p.timeSpent && p.timeSpent > 0);
     const totalTimeSpent = projectsWithTimeData.reduce((sum, p) => sum + (p.timeSpent || 0), 0);
@@ -672,6 +781,38 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       return acc;
     }, {} as Record<string, number>);
     const topTags = Object.entries(tagStats).sort(([, a], [, b]) => b - a).slice(0, 12);
+    const allTags = Object.entries(tagStats).sort(([, a], [, b]) => b - a);
+
+    // Genre stats
+    const genreStats = projects.reduce((acc, p) => {
+      if (p.genre) acc[p.genre] = (acc[p.genre] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    const topGenres = Object.entries(genreStats)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+
+    // Artist stats
+    const artistStats = projects.reduce((acc, p) => {
+      if (p.artists) {
+        p.artists.split(/[,;&]+/).map(a => a.trim()).filter(Boolean).forEach(artist => {
+          acc[artist] = (acc[artist] || 0) + 1;
+        });
+      }
+      return acc;
+    }, {} as Record<string, number>);
+    const topArtists = Object.entries(artistStats)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+
+    // Collection stats
+    const collectionStats = projects.reduce((acc, p) => {
+      if (p.collectionName) acc[p.collectionName] = (acc[p.collectionName] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    const topCollections = Object.entries(collectionStats)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
 
     const now = new Date();
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -685,6 +826,14 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
     const projectsWithBpm = projects.filter(p => p.bpm > 0);
     const avgBpm = projectsWithBpm.length > 0
       ? projectsWithBpm.reduce((sum, p) => sum + p.bpm, 0) / projectsWithBpm.length : 0;
+    const bpmValues = projectsWithBpm.map(p => p.bpm).sort((a, b) => a - b);
+    const medianBpm = bpmValues.length > 0 ? bpmValues[Math.floor(bpmValues.length / 2)] : 0;
+    const minBpm = bpmValues.length > 0 ? bpmValues[0] : 0;
+    const maxBpm = bpmValues.length > 0 ? bpmValues[bpmValues.length - 1] : 0;
+
+    const bpmCounts: Record<number, number> = {};
+    for (const b of bpmValues) bpmCounts[b] = (bpmCounts[b] || 0) + 1;
+    const modeBpm = Object.entries(bpmCounts).sort(([, a], [, b]) => b - a)[0];
 
     const completionRate = totalProjects > 0 ? (completedProjects / totalProjects) : 0;
     const activityRate = totalProjects > 0 ? (recentProjects.length / totalProjects) : 0;
@@ -700,14 +849,70 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
       }).length;
     });
 
+    // Monthly trend (12 months)
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const monthlyTrend = Array.from({ length: 12 }, (_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() - 11 + i, 1);
+      const nextMonth = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+      const count = projects.filter(p => {
+        const c = new Date(p.createdAt);
+        return c >= d && c < nextMonth;
+      }).length;
+      return { label: `${monthNames[d.getMonth()]} ${d.getFullYear().toString().slice(2)}`, value: count };
+    });
+
+    // Monthly status breakdown
+    const monthlyStatus = Array.from({ length: 12 }, (_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() - 11 + i, 1);
+      const nextMonth = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+      const monthProjects = projects.filter(p => {
+        const c = new Date(p.createdAt);
+        return c >= d && c < nextMonth;
+      });
+      return {
+        label: `${monthNames[d.getMonth()]} ${d.getFullYear().toString().slice(2)}`,
+        total: monthProjects.length,
+        completed: monthProjects.filter(p => p.status === 'completed' || p.status === 'released').length,
+        inProgress: monthProjects.filter(p => p.status === 'in-progress').length,
+        idea: monthProjects.filter(p => p.status === 'idea').length,
+      };
+    });
+
+    // Major vs minor key distribution
+    const majorKeys = Object.entries(keyStats).filter(([k]) => !k.toLowerCase().includes('m') || k.toLowerCase().includes('maj')).reduce((s, [, v]) => s + v, 0);
+    const minorKeys = Object.entries(keyStats).filter(([k]) => k.toLowerCase().includes('m') && !k.toLowerCase().includes('maj')).reduce((s, [, v]) => s + v, 0);
+
+    // Most productive month
+    const mostProductiveMonth = monthlyTrend.reduce((best, m) => m.value > best.value ? m : best, { label: '—', value: 0 });
+
+    // Longest time project
+    const longestProject = projectsWithTimeData.length > 0
+      ? projectsWithTimeData.reduce((best, p) => (p.timeSpent || 0) > (best.timeSpent || 0) ? p : best)
+      : null;
+
+    // Share count stats
+    const totalShares = projects.reduce((sum, p) => sum + (p.shareCount || 0), 0);
+    const projectsShared = projects.filter(p => (p.shareCount || 0) > 0).length;
+
     return {
       totalProjects, activeProjects, archivedProjects, completedProjects, releasedProjects,
       inProgressProjects, mixingProjects, masteringProjects, ideaProjects,
-      dawStats, bpmRanges, keyStats, topKeys, tagStats, topTags,
+      dawStats, bpmRanges, keyStats, topKeys, tagStats, topTags, allTags,
       totalTimeSpent, avgTimePerProject, maxTimeSpent,
       recentProjects: recentProjects.length, weeklyProjects: weeklyProjects.length,
-      recentTimeSpent, avgBpm, productivityScore, completionRate: completionRate * 100,
-      weeklyTrend, projectsWithTimeData: projectsWithTimeData.length,
+      recentTimeSpent, avgBpm, medianBpm, minBpm, maxBpm, modeBpm: modeBpm ? { bpm: Number(modeBpm[0]), count: modeBpm[1] } : null,
+      productivityScore, completionRate: completionRate * 100,
+      weeklyTrend, monthlyTrend, monthlyStatus,
+      projectsWithTimeData: projectsWithTimeData.length,
+      topGenres, topArtists, topCollections,
+      majorKeys, minorKeys,
+      mostProductiveMonth,
+      longestProject,
+      totalShares, projectsShared,
+      genreCount: Object.keys(genreStats).length,
+      artistCount: Object.keys(artistStats).length,
+      collectionCount: Object.keys(collectionStats).length,
+      tagCount: Object.keys(tagStats).length,
     };
   }, [projects]);
 
@@ -749,34 +954,60 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
     }))
     .sort((a, b) => b.value - a.value);
 
-  const isLoading = !isDataReady;
+  // ── Filtered plugin list ────────────────────────────
+  const filteredPlugins = useMemo(() => {
+    let list = analysisStats.pluginRanking;
+    if (pluginSearch) {
+      const q = pluginSearch.toLowerCase();
+      list = list.filter(p => p.name.toLowerCase().includes(q));
+    }
+    if (pluginTypeFilter !== 'all') {
+      list = list.filter(p => {
+        if (pluginTypeFilter === 'sampler') return p.isSampler;
+        if (pluginTypeFilter === 'instrument') return p.isInstrument && !p.isSampler;
+        return !p.isInstrument && !p.isSampler;
+      });
+    }
+    if (pluginSort === 'name') list = [...list].sort((a, b) => a.name.localeCompare(b.name));
+    else if (pluginSort === 'projects') list = [...list].sort((a, b) => b.projectCount - a.projectCount);
+    return list;
+  }, [analysisStats.pluginRanking, pluginSearch, pluginTypeFilter, pluginSort]);
 
-  const [explorerQuery, setExplorerQuery] = useState('');
-
+  // ── Explorer results ────────────────────────────
   const explorerResults = useMemo(() => {
     const q = explorerQuery.trim().toLowerCase();
-    if (!q || q.length < 2) return null;
+    const nameSorter = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
+    const countSorter = (a: { value: number }, b: { value: number }) => b.value - a.value;
+    const sortFn = explorerSort === 'name' ? nameSorter : countSorter;
 
-    const matchedPlugins = analysisStats.pluginRanking
-      .filter(p => p.name.toLowerCase().includes(q))
-      .slice(0, 20);
+    if (!q || q.length < 2) {
+      return {
+        matchedPlugins: explorerCategory === 'all' || explorerCategory === 'plugins'
+          ? [...analysisStats.pluginRanking].sort(sortFn as any) : [],
+        matchedSampleFiles: explorerCategory === 'all' || explorerCategory === 'samples'
+          ? [...analysisStats.allSamples].sort(sortFn as any).slice(0, 100) : [],
+        matchedSamplePacks: explorerCategory === 'all' || explorerCategory === 'packs'
+          ? [...analysisStats.allSamplePacks].sort(sortFn as any) : [],
+        matchedMixer: explorerCategory === 'all' || explorerCategory === 'mixer'
+          ? [...analysisStats.topMixerEffects].sort(sortFn as any) : [],
+        isSearch: false,
+      };
+    }
 
-    // Search all individual sample files (not just top packs)
-    const matchedSampleFiles = analysisStats.allSamples
-      .filter(p => p.name.toLowerCase().includes(q))
-      .slice(0, 30);
+    return {
+      matchedPlugins: (explorerCategory === 'all' || explorerCategory === 'plugins')
+        ? analysisStats.pluginRanking.filter(p => p.name.toLowerCase().includes(q)).slice(0, 30) : [],
+      matchedSampleFiles: (explorerCategory === 'all' || explorerCategory === 'samples')
+        ? analysisStats.allSamples.filter(p => p.name.toLowerCase().includes(q)).slice(0, 50) : [],
+      matchedSamplePacks: (explorerCategory === 'all' || explorerCategory === 'packs')
+        ? analysisStats.allSamplePacks.filter(p => p.name.toLowerCase().includes(q)).slice(0, 30) : [],
+      matchedMixer: (explorerCategory === 'all' || explorerCategory === 'mixer')
+        ? analysisStats.topMixerEffects.filter(p => p.name.toLowerCase().includes(q)).slice(0, 30) : [],
+      isSearch: true,
+    };
+  }, [explorerQuery, explorerCategory, explorerSort, analysisStats]);
 
-    // Also search pack names
-    const matchedSamplePacks = analysisStats.topSamplePacks
-      .filter(p => p.name.toLowerCase().includes(q))
-      .slice(0, 20);
-
-    const matchedMixer = analysisStats.topMixerEffects
-      .filter(p => p.name.toLowerCase().includes(q))
-      .slice(0, 20);
-
-    return { matchedPlugins, matchedSampleFiles, matchedSamplePacks, matchedMixer };
-  }, [explorerQuery, analysisStats]);
+  const isLoading = !isDataReady;
 
   // ── RENDER ────────────────────────────────────────
   return (
@@ -826,17 +1057,20 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
             )}
           </div>
         ) : (
-          <Tabs defaultValue="overview" className="flex flex-col h-full">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col h-full">
             <div className="px-6 pt-4 pb-0">
               <TabsList>
                 <TabsTrigger value="overview" data-tour-tab="stats-overview">{t('stats.tab.overview')}</TabsTrigger>
                 <TabsTrigger value="plugins" data-tour-tab="stats-plugins">{t('stats.tab.plugins')}</TabsTrigger>
                 <TabsTrigger value="production" data-tour-tab="stats-production">{t('stats.tab.production')}</TabsTrigger>
+                <TabsTrigger value="trends">Trends</TabsTrigger>
                 <TabsTrigger value="explorer" data-tour-tab="stats-explorer">{t('stats.tab.explorer')}</TabsTrigger>
               </TabsList>
             </div>
 
-            {/* ── Overview ── */}
+            {/* ═══════════════════════════════════════ */}
+            {/*  OVERVIEW TAB                           */}
+            {/* ═══════════════════════════════════════ */}
             <TabsContent value="overview" className="flex-1 overflow-auto px-6 pb-6">
               <div className="max-w-6xl mx-auto space-y-6">
                 {/* Key metrics */}
@@ -871,6 +1105,46 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                   </Card>
                 </div>
 
+                {/* Productivity Score + Quick Stats */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <Card>
+                    <CardContent className="pt-6">
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
+                        <Zap className="w-3.5 h-3.5" /> Productivity Score
+                      </div>
+                      <p className="text-3xl font-semibold tracking-tight">{stats.productivityScore.toFixed(0)}</p>
+                      <Progress value={stats.productivityScore} className="h-1 mt-3" />
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="pt-6">
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
+                        <Disc3 className="w-3.5 h-3.5" /> Genres
+                      </div>
+                      <p className="text-3xl font-semibold tracking-tight">{stats.genreCount}</p>
+                      {stats.topGenres[0] && <p className="text-xs text-muted-foreground mt-1">Top: {stats.topGenres[0].name}</p>}
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="pt-6">
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
+                        <Users className="w-3.5 h-3.5" /> Artists
+                      </div>
+                      <p className="text-3xl font-semibold tracking-tight">{stats.artistCount}</p>
+                      {stats.topArtists[0] && <p className="text-xs text-muted-foreground mt-1">Top: {stats.topArtists[0].name}</p>}
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="pt-6">
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
+                        <FolderOpen className="w-3.5 h-3.5" /> Collections
+                      </div>
+                      <p className="text-3xl font-semibold tracking-tight">{stats.collectionCount}</p>
+                      {stats.topCollections[0] && <p className="text-xs text-muted-foreground mt-1">Top: {stats.topCollections[0].name}</p>}
+                    </CardContent>
+                  </Card>
+                </div>
+
                 {/* Status + Activity */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   <Card>
@@ -892,6 +1166,38 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                   </Card>
                 </div>
 
+                {/* Genre + Artist distributions */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {stats.topGenres.length > 0 && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm font-medium">Genre Distribution</CardTitle>
+                        <CardDescription>{stats.genreCount} unique genres</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <BarList data={stats.topGenres.map((g, i) => ({
+                          name: g.name,
+                          value: g.value,
+                          color: ['#f472b6', '#c084fc', '#60a5fa', '#22d3ee', '#4ade80', '#fb923c', '#f97316', '#ef4444'][i % 8],
+                        }))} max={12} />
+                      </CardContent>
+                    </Card>
+                  )}
+                  {stats.topArtists.length > 0 && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm font-medium">Artist / Collaborator Rankings</CardTitle>
+                        <CardDescription>{stats.artistCount} unique artists</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <BarList data={stats.topArtists.map(a => ({
+                          name: a.name, value: a.value, color: '#8b5cf6',
+                        }))} max={10} />
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
+
                 {/* BPM + Musical Profile */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   <Card>
@@ -903,9 +1209,25 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                       {stats.avgBpm > 0 && (
                         <>
                           <Separator className="my-4" />
-                          <div className="flex items-baseline justify-between text-sm">
-                            <span className="text-muted-foreground">{t('common.average')}</span>
-                            <span className="text-lg font-semibold tabular-nums">{Math.round(stats.avgBpm)} BPM</span>
+                          <div className="grid grid-cols-2 gap-3 text-sm">
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Average</span>
+                              <span className="font-semibold tabular-nums">{Math.round(stats.avgBpm)} BPM</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Median</span>
+                              <span className="font-semibold tabular-nums">{stats.medianBpm} BPM</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Range</span>
+                              <span className="font-semibold tabular-nums">{stats.minBpm}–{stats.maxBpm}</span>
+                            </div>
+                            {stats.modeBpm && (
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Most Common</span>
+                                <span className="font-semibold tabular-nums">{stats.modeBpm.bpm} ({stats.modeBpm.count}x)</span>
+                              </div>
+                            )}
                           </div>
                         </>
                       )}
@@ -919,7 +1241,15 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                     <CardContent className="space-y-4">
                       {stats.topKeys.length > 0 && (
                         <div>
-                          <p className="text-xs text-muted-foreground mb-2">{t('stats.keys')}</p>
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-xs text-muted-foreground">{t('stats.keys')}</p>
+                            {(stats.majorKeys > 0 || stats.minorKeys > 0) && (
+                              <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                                <span>Major: {stats.majorKeys}</span>
+                                <span>Minor: {stats.minorKeys}</span>
+                              </div>
+                            )}
+                          </div>
                           <div className="flex flex-wrap gap-1.5">
                             {stats.topKeys.map(([key, count], i) => (
                               <Badge key={key} variant={i === 0 ? "default" : "secondary"} className="tabular-nums">
@@ -931,11 +1261,23 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                       )}
                       {stats.topTags.length > 0 && (
                         <div>
-                          <p className="text-xs text-muted-foreground mb-2">{t('stats.tags')}</p>
+                          <p className="text-xs text-muted-foreground mb-2">{t('stats.tags')} ({stats.tagCount} unique)</p>
                           <div className="flex flex-wrap gap-1.5">
                             {stats.topTags.map(([tag, count]) => (
                               <Badge key={tag} variant="outline" className="tabular-nums">
                                 {tag} <span className="ml-1 opacity-60">{count}</span>
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {stats.topCollections.length > 0 && (
+                        <div>
+                          <p className="text-xs text-muted-foreground mb-2">Collections</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {stats.topCollections.slice(0, 8).map(c => (
+                              <Badge key={c.name} variant="outline" className="tabular-nums">
+                                {c.name} <span className="ml-1 opacity-60">{c.value}</span>
                               </Badge>
                             ))}
                           </div>
@@ -949,14 +1291,51 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                     </CardContent>
                   </Card>
                 </div>
+
+                {/* Records row */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <Trophy className="w-4 h-4 text-amber-500" /> Records & Milestones
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Most Productive Month</p>
+                        <p className="font-semibold">{stats.mostProductiveMonth.label}</p>
+                        <p className="text-sm text-muted-foreground">{stats.mostProductiveMonth.value} projects</p>
+                      </div>
+                      {stats.longestProject && (
+                        <div>
+                          <p className="text-xs text-muted-foreground mb-1">Longest Session</p>
+                          <p className="font-semibold truncate">{stats.longestProject.title}</p>
+                          <p className="text-sm text-muted-foreground">{formatTime(stats.longestProject.timeSpent || 0)}</p>
+                        </div>
+                      )}
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Total Shares</p>
+                        <p className="font-semibold">{stats.totalShares}</p>
+                        <p className="text-sm text-muted-foreground">{stats.projectsShared} projects shared</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Released Tracks</p>
+                        <p className="font-semibold">{stats.releasedProjects}</p>
+                        <p className="text-sm text-muted-foreground">of {stats.totalProjects} total</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
             </TabsContent>
 
-            {/* ── Plugins ── */}
+            {/* ═══════════════════════════════════════ */}
+            {/*  PLUGINS TAB                            */}
+            {/* ═══════════════════════════════════════ */}
             <TabsContent value="plugins" className="flex-1 overflow-auto px-6 pb-6">
               <div className="max-w-6xl mx-auto space-y-6">
                 {/* Numbers */}
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                   <Card>
                     <CardContent className="pt-6">
                       <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
@@ -990,6 +1369,14 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                       <p className="text-3xl font-semibold tracking-tight">{analysisStats.pluginTypeCount.samplers}</p>
                     </CardContent>
                   </Card>
+                  <Card>
+                    <CardContent className="pt-6">
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
+                        <Star className="w-3.5 h-3.5" /> Presets Used
+                      </div>
+                      <p className="text-3xl font-semibold tracking-tight">{analysisStats.totalPresets}</p>
+                    </CardContent>
+                  </Card>
                 </div>
 
                 {/* Favorites row */}
@@ -1021,7 +1408,151 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                   </Card>
                 )}
 
-                {/* Rankings */}
+                {/* Plugin Search + Filter + Sort */}
+                <Card>
+                  <CardHeader>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <CardTitle className="text-sm font-medium">All Plugins ({filteredPlugins.length})</CardTitle>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="relative w-48">
+                          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                          <Input
+                            value={pluginSearch}
+                            onChange={(e) => setPluginSearch(e.target.value)}
+                            placeholder="Search plugins..."
+                            className="pl-8 h-8 text-xs"
+                          />
+                          {pluginSearch && (
+                            <button type="button" title="Clear search" onClick={() => setPluginSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2">
+                              <X className="w-3 h-3 text-muted-foreground" />
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex border rounded-md overflow-hidden">
+                          {(['all', 'instrument', 'effect', 'sampler'] as const).map(type => (
+                            <button
+                              key={type}
+                              onClick={() => setPluginTypeFilter(type)}
+                              className={cn(
+                                "px-2.5 py-1 text-[11px] font-medium transition-colors",
+                                pluginTypeFilter === type
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-background hover:bg-muted text-muted-foreground"
+                              )}
+                            >
+                              {type === 'all' ? 'All' : type === 'instrument' ? 'INST' : type === 'effect' ? 'FX' : 'SMP'}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="flex border rounded-md overflow-hidden">
+                          {(['count', 'name', 'projects'] as const).map(sort => (
+                            <button
+                              key={sort}
+                              onClick={() => setPluginSort(sort)}
+                              className={cn(
+                                "px-2.5 py-1 text-[11px] font-medium transition-colors",
+                                pluginSort === sort
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-background hover:bg-muted text-muted-foreground"
+                              )}
+                            >
+                              {sort === 'count' ? 'Uses' : sort === 'name' ? 'A-Z' : 'Projects'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <CardDescription>Click any plugin to see detailed usage — presets, channels, and projects</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-1 max-h-[500px] overflow-y-auto">
+                      {filteredPlugins.map((p) => (
+                        <div key={p.name}>
+                          <button
+                            onClick={() => setExpandedPlugin(expandedPlugin === p.name ? null : p.name)}
+                            className="w-full flex items-center justify-between text-sm py-2 px-2 rounded-md hover:bg-muted/50 transition-colors"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <ChevronRight className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform flex-shrink-0", expandedPlugin === p.name && "rotate-90")} />
+                              <Badge variant={p.isSampler ? 'default' : p.isInstrument ? 'secondary' : 'outline'} className="text-[10px] px-1.5 py-0 flex-shrink-0">
+                                {p.isSampler ? 'SMP' : p.isInstrument ? 'INST' : 'FX'}
+                              </Badge>
+                              <span className="truncate font-medium">{p.name}</span>
+                            </div>
+                            <div className="flex items-center gap-3 flex-shrink-0 ml-3">
+                              <span className="text-muted-foreground tabular-nums text-xs">{p.count} uses</span>
+                              <span className="text-muted-foreground tabular-nums text-xs">{p.projectCount} proj</span>
+                            </div>
+                          </button>
+                          <AnimatePresence>
+                            {expandedPlugin === p.name && (
+                              <motion.div
+                                initial={{ height: 0, opacity: 0 }}
+                                animate={{ height: 'auto', opacity: 1 }}
+                                exit={{ height: 0, opacity: 0 }}
+                                transition={{ duration: 0.2 }}
+                                className="overflow-hidden"
+                              >
+                                <div className="ml-8 mr-2 mb-2 p-3 rounded-lg bg-muted/30 border border-border/30 space-y-3">
+                                  <div className="grid grid-cols-3 gap-4 text-xs">
+                                    <div>
+                                      <p className="text-muted-foreground mb-1">Type</p>
+                                      <p className="font-medium">{p.isSampler ? 'Sampler' : p.isInstrument ? 'Instrument' : 'Effect'}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-muted-foreground mb-1">Total Instances</p>
+                                      <p className="font-medium">{p.count}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-muted-foreground mb-1">Avg Per Project</p>
+                                      <p className="font-medium">{(p.count / Math.max(p.projectCount, 1)).toFixed(1)}</p>
+                                    </div>
+                                  </div>
+                                  {p.presetList.length > 0 && (
+                                    <div>
+                                      <p className="text-xs text-muted-foreground mb-1.5">Presets ({p.presetList.length})</p>
+                                      <div className="flex flex-wrap gap-1">
+                                        {p.presetList.slice(0, 20).map(pr => (
+                                          <Badge key={pr} variant="outline" className="text-[10px]">{pr}</Badge>
+                                        ))}
+                                        {p.presetList.length > 20 && <Badge variant="outline" className="text-[10px]">+{p.presetList.length - 20} more</Badge>}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {p.channelList.length > 0 && (
+                                    <div>
+                                      <p className="text-xs text-muted-foreground mb-1.5">Channel Names ({p.channelList.length})</p>
+                                      <div className="flex flex-wrap gap-1">
+                                        {p.channelList.slice(0, 15).map(ch => (
+                                          <Badge key={ch} variant="secondary" className="text-[10px]">{ch}</Badge>
+                                        ))}
+                                        {p.channelList.length > 15 && <Badge variant="secondary" className="text-[10px]">+{p.channelList.length - 15} more</Badge>}
+                                      </div>
+                                    </div>
+                                  )}
+                                  <div>
+                                    <p className="text-xs text-muted-foreground mb-1.5">Used In Projects ({p.projectCount})</p>
+                                    <div className="flex flex-wrap gap-1">
+                                      {p.projectNames.slice(0, 15).map(name => (
+                                        <Badge key={name} variant="outline" className="text-[10px]">{name}</Badge>
+                                      ))}
+                                      {p.projectNames.length > 15 && <Badge variant="outline" className="text-[10px]">+{p.projectNames.length - 15} more</Badge>}
+                                    </div>
+                                  </div>
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      ))}
+                      {filteredPlugins.length === 0 && (
+                        <p className="text-sm text-muted-foreground text-center py-8">No plugins match your filter</p>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Rankings side by side */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   {analysisStats.topInstruments.length > 0 && (
                     <Card>
@@ -1045,95 +1576,152 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                   )}
                 </div>
 
-                {/* Mixer effects */}
-                {analysisStats.topMixerEffects.length > 0 && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-sm font-medium">{t('stats.mixerInsertRankings')}</CardTitle>
-                      <CardDescription>
-                        {t('stats.mixerEffectsAcross', { effects: String(analysisStats.totalMixerEffects), tracks: String(analysisStats.totalMixerTracks) })}
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <BarList data={analysisStats.topMixerEffects.map(p => ({ name: p.name, value: p.value, color: '#a855f7' }))} />
-                    </CardContent>
-                  </Card>
-                )}
+                {/* Co-occurrence + Mixer effects */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {analysisStats.topCoOccurrence.length > 0 && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm font-medium flex items-center gap-2">
+                          <GitBranch className="w-4 h-4" /> Plugin Pairs (Co-occurrence)
+                        </CardTitle>
+                        <CardDescription>Plugins most frequently used together in the same project</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <BarList data={analysisStats.topCoOccurrence.map(p => ({ name: p.name, value: p.value, color: '#06b6d4' }))} max={10} />
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {analysisStats.topMixerEffects.length > 0 && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm font-medium">{t('stats.mixerInsertRankings')}</CardTitle>
+                        <CardDescription>
+                          {t('stats.mixerEffectsAcross', { effects: String(analysisStats.totalMixerEffects), tracks: String(analysisStats.totalMixerTracks) })}
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <BarList data={analysisStats.topMixerEffects.map(p => ({ name: p.name, value: p.value, color: '#a855f7' }))} />
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
               </div>
             </TabsContent>
 
-            {/* ── Production ── */}
+            {/* ═══════════════════════════════════════ */}
+            {/*  PRODUCTION TAB                         */}
+            {/* ═══════════════════════════════════════ */}
             <TabsContent value="production" className="flex-1 overflow-auto px-6 pb-6">
               <div className="max-w-6xl mx-auto space-y-6">
                 {/* Time stats */}
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                  <Card>
-                    <CardContent className="pt-6">
-                      <p className="text-sm text-muted-foreground">{t('stats.totalTime')}</p>
-                      <p className="text-2xl font-semibold tracking-tight mt-1">{formatTime(stats.totalTimeSpent)}</p>
-                      <p className="text-xs text-muted-foreground mt-1">{t('stats.projectsTracked', { count: String(stats.projectsWithTimeData) })}</p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="pt-6">
-                      <p className="text-sm text-muted-foreground">{t('stats.avgPerProjectTime')}</p>
-                      <p className="text-2xl font-semibold tracking-tight mt-1">{formatTime(stats.avgTimePerProject)}</p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="pt-6">
-                      <p className="text-sm text-muted-foreground">{t('stats.longestSession')}</p>
-                      <p className="text-2xl font-semibold tracking-tight mt-1">{formatTime(stats.maxTimeSpent)}</p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="pt-6">
-                      <p className="text-sm text-muted-foreground">{t('stats.thisMonth')}</p>
-                      <p className="text-2xl font-semibold tracking-tight mt-1">{formatTime(stats.recentTimeSpent)}</p>
-                      <p className="text-xs text-muted-foreground mt-1">{t('stats.projects', { count: String(stats.recentProjects) })}</p>
-                    </CardContent>
-                  </Card>
+                  <Card><CardContent className="pt-6">
+                    <StatNumber label={t('stats.totalTime')} value={formatTime(stats.totalTimeSpent)} sub={t('stats.projectsTracked', { count: String(stats.projectsWithTimeData) })} icon={<Clock className="w-3.5 h-3.5" />} />
+                  </CardContent></Card>
+                  <Card><CardContent className="pt-6">
+                    <StatNumber label={t('stats.avgPerProjectTime')} value={formatTime(stats.avgTimePerProject)} icon={<Clock className="w-3.5 h-3.5" />} />
+                  </CardContent></Card>
+                  <Card><CardContent className="pt-6">
+                    <StatNumber label={t('stats.longestSession')} value={formatTime(stats.maxTimeSpent)} icon={<Clock className="w-3.5 h-3.5" />} />
+                  </CardContent></Card>
+                  <Card><CardContent className="pt-6">
+                    <StatNumber label={t('stats.thisMonth')} value={formatTime(stats.recentTimeSpent)} sub={t('stats.projects', { count: String(stats.recentProjects) })} icon={<Clock className="w-3.5 h-3.5" />} />
+                  </CardContent></Card>
                 </div>
 
                 {/* Composition stats */}
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                  <Card>
-                    <CardContent className="pt-6">
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
-                        <SlidersHorizontal className="w-3.5 h-3.5" /> {t('stats.channels')}
-                      </div>
-                      <p className="text-2xl font-semibold">{analysisStats.totalChannels}</p>
-                      <p className="text-xs text-muted-foreground mt-1">{t('stats.avgProjectSuffix', { value: analysisStats.avgChannelsPerProject.toFixed(1) })}</p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="pt-6">
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
-                        <Layers className="w-3.5 h-3.5" /> {t('stats.patterns')}
-                      </div>
-                      <p className="text-2xl font-semibold">{analysisStats.totalPatterns}</p>
-                      <p className="text-xs text-muted-foreground mt-1">{t('stats.avgProjectSuffix', { value: analysisStats.avgPatternsPerProject.toFixed(1) })}</p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="pt-6">
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
-                        <Headphones className="w-3.5 h-3.5" /> {t('stats.mixerInserts')}
-                      </div>
-                      <p className="text-2xl font-semibold">{analysisStats.totalMixerTracks}</p>
-                      <p className="text-xs text-muted-foreground mt-1">{t('stats.avgProjectSuffix', { value: analysisStats.avgMixerTracksPerProject.toFixed(1) })}</p>
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardContent className="pt-6">
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
-                        <FileAudio className="w-3.5 h-3.5" /> {t('stats.samples')}
-                      </div>
-                      <p className="text-2xl font-semibold">{analysisStats.totalSamples}</p>
-                      <p className="text-xs text-muted-foreground mt-1">{t('stats.avgProjectSuffix', { value: analysisStats.avgSamplesPerProject.toFixed(1) })}</p>
-                    </CardContent>
-                  </Card>
+                  <Card><CardContent className="pt-6">
+                    <StatNumber label={t('stats.channels')} value={analysisStats.totalChannels} sub={t('stats.avgProjectSuffix', { value: analysisStats.avgChannelsPerProject.toFixed(1) })} icon={<SlidersHorizontal className="w-3.5 h-3.5" />} />
+                  </CardContent></Card>
+                  <Card><CardContent className="pt-6">
+                    <StatNumber label={t('stats.patterns')} value={analysisStats.totalPatterns} sub={t('stats.avgProjectSuffix', { value: analysisStats.avgPatternsPerProject.toFixed(1) })} icon={<Layers className="w-3.5 h-3.5" />} />
+                  </CardContent></Card>
+                  <Card><CardContent className="pt-6">
+                    <StatNumber label={t('stats.mixerInserts')} value={analysisStats.totalMixerTracks} sub={t('stats.avgProjectSuffix', { value: analysisStats.avgMixerTracksPerProject.toFixed(1) })} icon={<Headphones className="w-3.5 h-3.5" />} />
+                  </CardContent></Card>
+                  <Card><CardContent className="pt-6">
+                    <StatNumber label={t('stats.samples')} value={analysisStats.totalSamples} sub={t('stats.avgProjectSuffix', { value: analysisStats.avgSamplesPerProject.toFixed(1) })} icon={<FileAudio className="w-3.5 h-3.5" />} />
+                  </CardContent></Card>
                 </div>
+
+                {/* Mixer chain analysis */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm font-medium">Mixer Chain Analysis</CardTitle>
+                    <CardDescription>How many effects are loaded per mixer insert track</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Total Mixer Effects</p>
+                        <p className="text-lg font-semibold">{analysisStats.totalMixerEffects}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Avg Effects / Insert</p>
+                        <p className="text-lg font-semibold">{analysisStats.avgEffectsPerMixerTrack.toFixed(1)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Median Effects / Insert</p>
+                        <p className="text-lg font-semibold">{analysisStats.medianEffectsPerTrack}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Max on Single Insert</p>
+                        <p className="text-lg font-semibold">{analysisStats.maxMixerEffectsOnTrack}</p>
+                        {analysisStats.maxMixerEffectsTrackName && (
+                          <p className="text-xs text-muted-foreground truncate">{analysisStats.maxMixerEffectsTrackName}</p>
+                        )}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Project Complexity Ranking */}
+                {analysisStats.projectComplexity.length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-sm font-medium flex items-center gap-2">
+                        <Target className="w-4 h-4" /> Project Complexity Rankings
+                      </CardTitle>
+                      <CardDescription>Projects ranked by total plugins + channels + patterns + mixer tracks + samples</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b text-left text-muted-foreground">
+                              <th className="py-2 pr-4 font-medium">#</th>
+                              <th className="py-2 pr-4 font-medium">Project</th>
+                              <th className="py-2 pr-4 font-medium text-right">Plugins</th>
+                              <th className="py-2 pr-4 font-medium text-right">Channels</th>
+                              <th className="py-2 pr-4 font-medium text-right">Patterns</th>
+                              <th className="py-2 pr-4 font-medium text-right">Mixer</th>
+                              <th className="py-2 pr-4 font-medium text-right">Samples</th>
+                              <th className="py-2 pr-4 font-medium text-right">FX Chain</th>
+                              <th className="py-2 font-medium text-right">Score</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {analysisStats.projectComplexity.slice(0, 20).map((p, i) => (
+                              <tr key={p.id} className="border-b border-border/20 hover:bg-muted/30">
+                                <td className="py-2 pr-4 tabular-nums text-muted-foreground">{i + 1}</td>
+                                <td className="py-2 pr-4 font-medium truncate max-w-[200px]">{p.name}</td>
+                                <td className="py-2 pr-4 text-right tabular-nums">{p.plugins}</td>
+                                <td className="py-2 pr-4 text-right tabular-nums">{p.channels}</td>
+                                <td className="py-2 pr-4 text-right tabular-nums">{p.patterns}</td>
+                                <td className="py-2 pr-4 text-right tabular-nums">{p.mixerTracks}</td>
+                                <td className="py-2 pr-4 text-right tabular-nums">{p.samples}</td>
+                                <td className="py-2 pr-4 text-right tabular-nums">{p.mixerEffects}</td>
+                                <td className="py-2 text-right font-semibold tabular-nums">{p.score}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
 
                 {/* Channel types + DAW + FL versions */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1221,183 +1809,298 @@ export const Statistics: React.FC<StatisticsProps> = ({ projects, settings }) =>
                 )}
               </div>
             </TabsContent>
-            {/* ── Explorer ── */}
+
+            {/* ═══════════════════════════════════════ */}
+            {/*  TRENDS TAB                             */}
+            {/* ═══════════════════════════════════════ */}
+            <TabsContent value="trends" className="flex-1 overflow-auto px-6 pb-6">
+              <div className="max-w-6xl mx-auto space-y-6">
+                {/* Monthly project creation */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <Calendar className="w-4 h-4" /> Monthly Project Creation
+                    </CardTitle>
+                    <CardDescription>Projects created per month over the last 12 months</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <MiniBarChart
+                      data={stats.monthlyTrend.map(m => m.value)}
+                      labels={stats.monthlyTrend.map(m => m.label)}
+                      height={100}
+                      color="#3b82f6"
+                    />
+                    <div className="flex justify-between text-[10px] text-muted-foreground mt-2">
+                      <span>{stats.monthlyTrend[0]?.label}</span>
+                      <span>{stats.monthlyTrend[stats.monthlyTrend.length - 1]?.label}</span>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Weekly trend */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <Activity className="w-4 h-4" /> Weekly Trend
+                    </CardTitle>
+                    <CardDescription>Projects created per week over the last 8 weeks</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <MiniBarChart
+                      data={stats.weeklyTrend}
+                      labels={stats.weeklyTrend.map((_, i) => `Week ${i + 1}`)}
+                      height={80}
+                      color="#22c55e"
+                    />
+                  </CardContent>
+                </Card>
+
+                {/* Monthly status breakdown */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm font-medium">Monthly Status Breakdown</CardTitle>
+                    <CardDescription>How projects created each month are distributed by status</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b text-left text-muted-foreground">
+                            <th className="py-2 pr-4 font-medium">Month</th>
+                            <th className="py-2 pr-4 font-medium text-right">Total</th>
+                            <th className="py-2 pr-4 font-medium text-right">Completed</th>
+                            <th className="py-2 pr-4 font-medium text-right">In Progress</th>
+                            <th className="py-2 pr-4 font-medium text-right">Ideas</th>
+                            <th className="py-2 font-medium text-right">Completion %</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stats.monthlyStatus.filter(m => m.total > 0).map((m) => (
+                            <tr key={m.label} className="border-b border-border/20">
+                              <td className="py-2 pr-4 font-medium">{m.label}</td>
+                              <td className="py-2 pr-4 text-right tabular-nums">{m.total}</td>
+                              <td className="py-2 pr-4 text-right tabular-nums text-emerald-500">{m.completed}</td>
+                              <td className="py-2 pr-4 text-right tabular-nums text-blue-500">{m.inProgress}</td>
+                              <td className="py-2 pr-4 text-right tabular-nums text-purple-500">{m.idea}</td>
+                              <td className="py-2 text-right tabular-nums font-medium">
+                                {m.total > 0 ? `${((m.completed / m.total) * 100).toFixed(0)}%` : '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* All Tags */}
+                {stats.allTags.length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-sm font-medium flex items-center gap-2">
+                        <Hash className="w-4 h-4" /> All Tags ({stats.tagCount})
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex flex-wrap gap-1.5">
+                        {stats.allTags.map(([tag, count]) => (
+                          <Badge key={tag} variant="outline" className="tabular-nums">
+                            {tag} <span className="ml-1 opacity-60">{count}</span>
+                          </Badge>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Full genre + artist + collection breakdowns */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  {stats.topGenres.length > 0 && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm font-medium">All Genres ({stats.genreCount})</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <BarList data={stats.topGenres.map((g, i) => ({
+                          name: g.name, value: g.value,
+                          color: ['#f472b6', '#c084fc', '#60a5fa', '#22d3ee', '#4ade80', '#fb923c'][i % 6],
+                        }))} max={50} />
+                      </CardContent>
+                    </Card>
+                  )}
+                  {stats.topArtists.length > 0 && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm font-medium">All Artists ({stats.artistCount})</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <BarList data={stats.topArtists.map(a => ({ name: a.name, value: a.value, color: '#8b5cf6' }))} max={50} />
+                      </CardContent>
+                    </Card>
+                  )}
+                  {stats.topCollections.length > 0 && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm font-medium">All Collections ({stats.collectionCount})</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <BarList data={stats.topCollections.map(c => ({ name: c.name, value: c.value, color: '#f59e0b' }))} max={50} />
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
+              </div>
+            </TabsContent>
+
+            {/* ═══════════════════════════════════════ */}
+            {/*  EXPLORER TAB                           */}
+            {/* ═══════════════════════════════════════ */}
             <TabsContent value="explorer" className="flex-1 overflow-auto px-6 pb-6">
               <div className="max-w-6xl mx-auto space-y-6">
-                {/* Search */}
-                <div className="relative max-w-md">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <Input
-                    value={explorerQuery}
-                    onChange={(e) => setExplorerQuery(e.target.value)}
-                    placeholder={t('stats.explorerSearch')}
-                    className="pl-9 bg-muted/30"
-                  />
+                {/* Search + Category Filter + Sort */}
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <div className="relative flex-1 max-w-md">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      value={explorerQuery}
+                      onChange={(e) => setExplorerQuery(e.target.value)}
+                      placeholder={t('stats.explorerSearch')}
+                      className="pl-9 bg-muted/30"
+                    />
+                    {explorerQuery && (
+                      <button type="button" title="Clear search" onClick={() => setExplorerQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2">
+                        <X className="w-4 h-4 text-muted-foreground" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex border rounded-md overflow-hidden">
+                      {(['all', 'plugins', 'samples', 'packs', 'mixer'] as const).map(cat => (
+                        <button
+                          key={cat}
+                          onClick={() => setExplorerCategory(cat)}
+                          className={cn(
+                            "px-3 py-1.5 text-xs font-medium transition-colors",
+                            explorerCategory === cat
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-background hover:bg-muted text-muted-foreground"
+                          )}
+                        >
+                          {cat === 'all' ? 'All' : cat === 'plugins' ? 'Plugins' : cat === 'samples' ? 'Samples' : cat === 'packs' ? 'Packs' : 'Mixer FX'}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex border rounded-md overflow-hidden">
+                      {(['count', 'name'] as const).map(sort => (
+                        <button
+                          key={sort}
+                          onClick={() => setExplorerSort(sort)}
+                          className={cn(
+                            "px-3 py-1.5 text-xs font-medium transition-colors",
+                            explorerSort === sort
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-background hover:bg-muted text-muted-foreground"
+                          )}
+                        >
+                          {sort === 'count' ? 'By Count' : 'A-Z'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
 
-                {explorerQuery.trim().length < 2 ? (
-                  <div className="space-y-6">
-                    <p className="text-sm text-muted-foreground">{t('stats.explorerHint')}</p>
+                {!explorerQuery && <p className="text-sm text-muted-foreground">{t('stats.explorerHint')}</p>}
 
-                    {/* Full plugin list */}
-                    {analysisStats.pluginRanking.length > 0 && (
-                      <Card>
-                        <CardHeader>
-                          <CardTitle className="text-sm font-medium">{t('stats.allPlugins', { count: String(analysisStats.pluginRanking.length) })}</CardTitle>
-                          <CardDescription>{t('stats.everyPlugin')}</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-2">
-                            {analysisStats.pluginRanking.map((p) => (
-                              <div key={p.name} className="flex items-center justify-between text-sm py-1.5 border-b border-border/20 last:border-0">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <Badge variant={p.isSampler ? 'default' : p.isInstrument ? 'secondary' : 'outline'} className="text-[10px] px-1.5 py-0 flex-shrink-0">
-                                    {p.isSampler ? 'SMP' : p.isInstrument ? 'INST' : 'FX'}
-                                  </Badge>
-                                  <span className="truncate font-medium">{p.name}</span>
-                                </div>
-                                <span className="text-muted-foreground tabular-nums flex-shrink-0 ml-3">
-                                  {t('stats.pluginUsage', { count: String(p.count), projects: String(p.projectCount) })}
-                                </span>
-                              </div>
-                            ))}
+                {/* Results */}
+                {(explorerCategory === 'all' || explorerCategory === 'plugins') && explorerResults.matchedPlugins.length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-sm font-medium">
+                        {explorerResults.isSearch ? t('stats.pluginsLabel', { count: String(explorerResults.matchedPlugins.length) }) : t('stats.allPlugins', { count: String(explorerResults.matchedPlugins.length) })}
+                      </CardTitle>
+                      {!explorerResults.isSearch && <CardDescription>{t('stats.everyPlugin')}</CardDescription>}
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                        {explorerResults.matchedPlugins.map((p) => (
+                          <div key={p.name} className="flex items-center justify-between text-sm py-1.5 border-b border-border/20 last:border-0">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Badge variant={p.isSampler ? 'default' : p.isInstrument ? 'secondary' : 'outline'} className="text-[10px] px-1.5 py-0 flex-shrink-0">
+                                {p.isSampler ? 'SMP' : p.isInstrument ? 'INST' : 'FX'}
+                              </Badge>
+                              <span className="truncate font-medium">{p.name}</span>
+                            </div>
+                            <span className="text-muted-foreground tabular-nums flex-shrink-0 ml-3">
+                              {t('stats.pluginUsage', { count: String(p.count), projects: String(p.projectCount) })}
+                            </span>
                           </div>
-                        </CardContent>
-                      </Card>
-                    )}
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
 
-                    {/* Full sample files list */}
-                    {analysisStats.allSamples.length > 0 && (
-                      <Card>
-                        <CardHeader>
-                          <CardTitle className="text-sm font-medium">{t('stats.allSampleFiles', { count: String(analysisStats.allSamples.length) })}</CardTitle>
-                          <CardDescription>{t('stats.allSampleFilesDesc')}</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-2 max-h-80 overflow-y-auto">
-                            {analysisStats.allSamples.slice(0, 100).map((s) => (
-                              <div key={s.name} className="flex items-center justify-between text-sm py-1.5 border-b border-border/20 last:border-0">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <FileAudio className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
-                                  <span className="truncate font-medium">{s.name}</span>
-                                </div>
-                                <span className="text-muted-foreground tabular-nums flex-shrink-0 ml-3">
-                                  {t('stats.sampleUsage', { count: String(s.value), projects: String(s.projectCount) })}
-                                </span>
-                              </div>
-                            ))}
+                {(explorerCategory === 'all' || explorerCategory === 'samples') && explorerResults.matchedSampleFiles.length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-sm font-medium">
+                        {explorerResults.isSearch ? `Sample Files (${explorerResults.matchedSampleFiles.length})` : `All Sample Files (${explorerResults.matchedSampleFiles.length})`}
+                      </CardTitle>
+                      {!explorerResults.isSearch && <CardDescription>Every individual sample file found across your projects</CardDescription>}
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                        {explorerResults.matchedSampleFiles.map((s) => (
+                          <div key={s.name} className="flex items-center justify-between text-sm py-1.5 border-b border-border/20 last:border-0">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <FileAudio className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                              <span className="truncate font-medium">{s.name}</span>
+                            </div>
+                            <span className="text-muted-foreground tabular-nums flex-shrink-0 ml-3">
+                              {t('stats.sampleUsage', { count: String(s.value), projects: String(s.projectCount) })}
+                            </span>
                           </div>
-                        </CardContent>
-                      </Card>
-                    )}
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
 
-                    {/* Full sample packs list */}
-                    {analysisStats.topSamplePacks.length > 0 && (
-                      <Card>
-                        <CardHeader>
-                          <CardTitle className="text-sm font-medium">{t('stats.allSamplePacks', { count: String(analysisStats.topSamplePacks.length) })}</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <BarList data={analysisStats.topSamplePacks.map(f => ({ name: f.name, value: f.value, color: '#22c55e' }))} max={100} />
-                        </CardContent>
-                      </Card>
-                    )}
+                {(explorerCategory === 'all' || explorerCategory === 'packs') && explorerResults.matchedSamplePacks.length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-sm font-medium">
+                        {explorerResults.isSearch ? t('stats.samplePacksLabel', { count: String(explorerResults.matchedSamplePacks.length) }) : t('stats.allSamplePacks', { count: String(explorerResults.matchedSamplePacks.length) })}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <BarList data={explorerResults.matchedSamplePacks.map(f => ({ name: f.name, value: f.value, color: '#22c55e' }))} max={100} />
+                    </CardContent>
+                  </Card>
+                )}
 
-                    {/* Full mixer effects list */}
-                    {analysisStats.topMixerEffects.length > 0 && (
-                      <Card>
-                        <CardHeader>
-                          <CardTitle className="text-sm font-medium">{t('stats.allMixerEffects', { count: String(analysisStats.topMixerEffects.length) })}</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <BarList data={analysisStats.topMixerEffects.map(f => ({ name: f.name, value: f.value, color: '#a855f7' }))} max={100} />
-                        </CardContent>
-                      </Card>
-                    )}
-                  </div>
-                ) : explorerResults ? (
-                  <div className="space-y-6">
-                    {explorerResults.matchedPlugins.length > 0 && (
-                      <Card>
-                        <CardHeader>
-                          <CardTitle className="text-sm font-medium">{t('stats.pluginsLabel', { count: String(explorerResults.matchedPlugins.length) })}</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-2">
-                            {explorerResults.matchedPlugins.map((p) => (
-                              <div key={p.name} className="flex items-center justify-between text-sm py-1.5 border-b border-border/20 last:border-0">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <Badge variant={p.isSampler ? 'default' : p.isInstrument ? 'secondary' : 'outline'} className="text-[10px] px-1.5 py-0 flex-shrink-0">
-                                    {p.isSampler ? 'SMP' : p.isInstrument ? 'INST' : 'FX'}
-                                  </Badge>
-                                  <span className="truncate font-medium">{p.name}</span>
-                                </div>
-                                <span className="text-muted-foreground tabular-nums flex-shrink-0 ml-3">
-                                  {t('stats.pluginUsage', { count: String(p.count), projects: String(p.projectCount) })}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    )}
+                {(explorerCategory === 'all' || explorerCategory === 'mixer') && explorerResults.matchedMixer.length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-sm font-medium">
+                        {explorerResults.isSearch ? t('stats.mixerEffectsLabel', { count: String(explorerResults.matchedMixer.length) }) : t('stats.allMixerEffects', { count: String(explorerResults.matchedMixer.length) })}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <BarList data={explorerResults.matchedMixer.map(f => ({ name: f.name, value: f.value, color: '#a855f7' }))} max={100} />
+                    </CardContent>
+                  </Card>
+                )}
 
-                    {explorerResults.matchedSampleFiles.length > 0 && (
-                      <Card>
-                        <CardHeader>
-                          <CardTitle className="text-sm font-medium">Sample Files ({explorerResults.matchedSampleFiles.length})</CardTitle>
-                          <CardDescription>Individual sample files matching your search</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-2">
-                            {explorerResults.matchedSampleFiles.map((s) => (
-                              <div key={s.name} className="flex items-center justify-between text-sm py-1.5 border-b border-border/20 last:border-0">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <FileAudio className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
-                                  <span className="truncate font-medium">{s.name}</span>
-                                </div>
-                                <span className="text-muted-foreground tabular-nums flex-shrink-0 ml-3">
-                                  {t('stats.sampleUsage', { count: String(s.value), projects: String(s.projectCount) })}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    )}
-
-                    {explorerResults.matchedSamplePacks.length > 0 && (
-                      <Card>
-                        <CardHeader>
-                          <CardTitle className="text-sm font-medium">{t('stats.samplePacksLabel', { count: String(explorerResults.matchedSamplePacks.length) })}</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <BarList data={explorerResults.matchedSamplePacks.map(f => ({ name: f.name, value: f.value, color: '#22c55e' }))} max={20} />
-                        </CardContent>
-                      </Card>
-                    )}
-
-                    {explorerResults.matchedMixer.length > 0 && (
-                      <Card>
-                        <CardHeader>
-                          <CardTitle className="text-sm font-medium">{t('stats.mixerEffectsLabel', { count: String(explorerResults.matchedMixer.length) })}</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <BarList data={explorerResults.matchedMixer.map(f => ({ name: f.name, value: f.value, color: '#a855f7' }))} max={20} />
-                        </CardContent>
-                      </Card>
-                    )}
-
-                    {explorerResults.matchedPlugins.length === 0 &&
-                     explorerResults.matchedSampleFiles.length === 0 &&
-                     explorerResults.matchedSamplePacks.length === 0 &&
-                     explorerResults.matchedMixer.length === 0 && (
-                      <p className="text-sm text-muted-foreground py-8 text-center">
-                        {t('stats.noResults', { query: explorerQuery })}
-                      </p>
-                    )}
-                  </div>
-                ) : null}
+                {explorerResults.isSearch &&
+                  explorerResults.matchedPlugins.length === 0 &&
+                  explorerResults.matchedSampleFiles.length === 0 &&
+                  explorerResults.matchedSamplePacks.length === 0 &&
+                  explorerResults.matchedMixer.length === 0 && (
+                    <p className="text-sm text-muted-foreground py-8 text-center">
+                      {t('stats.noResults', { query: explorerQuery })}
+                    </p>
+                  )}
               </div>
             </TabsContent>
           </Tabs>
