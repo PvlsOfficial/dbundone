@@ -14,8 +14,6 @@ function isAudioFile(name: string): boolean {
   return AUDIO_EXTENSIONS.has(ext);
 }
 
-const GRAPH_SELECT =
-  "id,name,size,file,audio,createdDateTime,lastModifiedDateTime,@microsoft.graph.downloadUrl";
 
 export async function GET(req: NextRequest) {
   const shareUrl = req.nextUrl.searchParams.get("shareUrl");
@@ -58,8 +56,7 @@ export async function GET(req: NextRequest) {
     };
 
     await fetchPage(
-      `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children` +
-        `?$select=${GRAPH_SELECT}&$top=200`
+      `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children?$top=200`
     );
 
     const audioFiles = (allFiles as Array<Record<string, unknown>>).filter(

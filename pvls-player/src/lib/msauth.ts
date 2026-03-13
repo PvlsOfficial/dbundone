@@ -1,11 +1,11 @@
 // Microsoft OAuth PKCE flow for personal OneDrive access
-// No client secret needed — PKCE is safe for browser/SPA apps
+// Token exchange happens directly in the browser (required for SPA client type)
 
 export const GRAPH_SCOPES = "Files.Read Files.ReadWrite offline_access User.Read";
-export const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
 
 const VERIFIER_KEY = "pvls_pkce_verifier";
 const TOKEN_KEY = "pvls_ms_tokens";
+const TOKEN_ENDPOINT = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 
 export interface MSTokens {
   access_token: string;
@@ -39,7 +39,7 @@ async function sha256Base64url(plain: string): Promise<string> {
 export async function buildAuthUrl(clientId: string, redirectUri: string): Promise<string> {
   const verifier = randomBase64url(64);
   const challenge = await sha256Base64url(verifier);
-  sessionStorage.setItem(VERIFIER_KEY, verifier);
+  localStorage.setItem(VERIFIER_KEY, verifier);
 
   const params = new URLSearchParams({
     client_id: clientId,
@@ -54,44 +54,60 @@ export async function buildAuthUrl(clientId: string, redirectUri: string): Promi
   return `https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?${params}`;
 }
 
-// ── Token exchange (via our API route to avoid CORS) ─────────────────────────
+// ── Token exchange — directly from browser (SPA type requires this) ───────────
 
 export async function exchangeCode(
   clientId: string,
   code: string,
   redirectUri: string
 ): Promise<MSTokens> {
-  const verifier = sessionStorage.getItem(VERIFIER_KEY);
-  if (!verifier) throw new Error("PKCE verifier missing — please try logging in again.");
+  const verifier = localStorage.getItem(VERIFIER_KEY);
+  if (!verifier) throw new Error("PKCE verifier missing — please sign in again.");
 
-  const res = await fetch("/api/auth/token", {
+  const params = new URLSearchParams({
+    client_id: clientId,
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: redirectUri,
+    code_verifier: verifier,
+    scope: GRAPH_SCOPES,
+  });
+
+  const res = await fetch(TOKEN_ENDPOINT, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ clientId, code, redirectUri, verifier, grant_type: "authorization_code" }),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
   });
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error ?? "Token exchange failed");
+    throw new Error(err.error_description ?? err.error ?? "Token exchange failed");
   }
 
   const data = await res.json();
   const tokens = toTokens(data);
   saveTokens(tokens);
-  sessionStorage.removeItem(VERIFIER_KEY);
+  localStorage.removeItem(VERIFIER_KEY);
   return tokens;
 }
 
 export async function refreshTokens(clientId: string, refreshToken: string): Promise<MSTokens> {
-  const res = await fetch("/api/auth/token", {
+  const params = new URLSearchParams({
+    client_id: clientId,
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    scope: GRAPH_SCOPES,
+  });
+
+  const res = await fetch(TOKEN_ENDPOINT, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ clientId, refreshToken, grant_type: "refresh_token" }),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
   });
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error ?? "Token refresh failed");
+    throw new Error(err.error_description ?? err.error ?? "Token refresh failed");
   }
 
   const data = await res.json();
@@ -125,16 +141,9 @@ export function loadTokens(): MSTokens | null {
 
 export function clearTokens() {
   localStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(VERIFIER_KEY);
+  localStorage.removeItem(VERIFIER_KEY);
 }
 
 export function isExpired(tokens: MSTokens): boolean {
   return Date.now() >= tokens.expires_at;
-}
-
-// ── Graph helpers ─────────────────────────────────────────────────────────────
-
-export function encodeShareUrl(shareUrl: string): string {
-  const base64 = btoa(shareUrl).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-  return "u!" + base64;
 }

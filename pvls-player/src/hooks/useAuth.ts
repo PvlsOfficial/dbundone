@@ -14,8 +14,14 @@ export interface AuthState {
 }
 
 const REDIRECT_PATH = "/";
+const CLIENT_ID_KEY = "pvls_ms_client_id";
 
-export function useAuth(clientId: string) {
+export function useAuth(envClientId: string) {
+  // Prefer env var, fall back to what user saved in localStorage
+  const clientId =
+    envClientId ||
+    (typeof window !== "undefined" ? (localStorage.getItem(CLIENT_ID_KEY) ?? "") : "");
+
   const [auth, setAuth] = useState<AuthState>({ tokens: null, loading: true, error: null });
 
   const redirectUri =
@@ -23,10 +29,8 @@ export function useAuth(clientId: string) {
       ? `${window.location.origin}${REDIRECT_PATH}`
       : "";
 
-  // Load persisted tokens on mount + handle OAuth callback
   useEffect(() => {
     const init = async () => {
-      // Handle OAuth callback code in URL
       const params = new URLSearchParams(window.location.search);
       const code = params.get("code");
       const error = params.get("error");
@@ -48,14 +52,12 @@ export function useAuth(clientId: string) {
         return;
       }
 
-      // Load stored tokens
       const stored = loadTokens();
       if (!stored) {
         setAuth({ tokens: null, loading: false, error: null });
         return;
       }
 
-      // Refresh if expired
       if (isExpired(stored) && clientId) {
         try {
           const fresh = await refreshTokens(clientId, stored.refresh_token);
@@ -69,16 +71,14 @@ export function useAuth(clientId: string) {
       }
     };
 
-    if (clientId) {
-      init();
-    } else {
-      setAuth({ tokens: null, loading: false, error: null });
-    }
-  }, [clientId]);
+    init();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once on mount — clientId from localStorage is stable
 
-  const login = useCallback(async () => {
-    if (!clientId) return;
-    const url = await buildAuthUrl(clientId, redirectUri);
+  const login = useCallback(async (overrideClientId?: string) => {
+    const id = overrideClientId ?? clientId;
+    if (!id) return;
+    const url = await buildAuthUrl(id, redirectUri);
     window.location.href = url;
   }, [clientId, redirectUri]);
 

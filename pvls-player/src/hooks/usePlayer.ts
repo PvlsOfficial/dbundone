@@ -4,6 +4,9 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import type { Song, PlayerState } from "@/types";
 import { getCachedAudio, cacheAudio, saveSong, getSong } from "@/lib/db";
 
+// Songs in the player always use the direct OneDrive URL (fresh after sync).
+// The blob cache is only used by the download feature and shown as "downloaded" badge.
+
 export function usePlayer() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [state, setState] = useState<PlayerState>({
@@ -18,26 +21,25 @@ export function usePlayer() {
     shuffle: false,
     repeat: "none",
   });
+  const handleEndedRef = useRef<() => void>(() => {});
 
   // Init audio element
   useEffect(() => {
     const audio = new Audio();
-    audio.preload = "auto";
+    audio.preload = "metadata";
     audioRef.current = audio;
 
-    audio.addEventListener("timeupdate", () => {
-      setState((s) => ({ ...s, currentTime: audio.currentTime }));
-    });
-    audio.addEventListener("loadedmetadata", () => {
-      setState((s) => ({ ...s, duration: audio.duration }));
-    });
-    audio.addEventListener("ended", () => {
-      handleEnded();
-    });
-    audio.addEventListener("play", () => {
-      setState((s) => ({ ...s, isPlaying: true }));
-    });
-    audio.addEventListener("pause", () => {
+    audio.addEventListener("timeupdate", () =>
+      setState((s) => ({ ...s, currentTime: audio.currentTime }))
+    );
+    audio.addEventListener("loadedmetadata", () =>
+      setState((s) => ({ ...s, duration: audio.duration }))
+    );
+    audio.addEventListener("ended", () => handleEndedRef.current());
+    audio.addEventListener("play", () => setState((s) => ({ ...s, isPlaying: true })));
+    audio.addEventListener("pause", () => setState((s) => ({ ...s, isPlaying: false })));
+    audio.addEventListener("error", () => {
+      console.error("[Player] Audio error:", audio.error?.code, audio.error?.message, audio.src.slice(0, 80));
       setState((s) => ({ ...s, isPlaying: false }));
     });
 
@@ -45,7 +47,6 @@ export function usePlayer() {
       audio.pause();
       audio.src = "";
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Sync volume
@@ -61,39 +62,56 @@ export function usePlayer() {
 
     audio.pause();
 
-    // Try cached blob first
+    // Prefer song.url (the pre-authenticated CDN URL returned by the songs API).
+    // Only fall back to the streaming proxy when song.url is missing or expired.
     let src = song.url;
-    try {
-      const blob = await getCachedAudio(song.id);
-      if (blob) {
-        src = URL.createObjectURL(blob);
+
+    if (!src) {
+      // Read token synchronously from localStorage — no async gap, gesture context preserved
+      let token = "";
+      try {
+        const raw = localStorage.getItem("pvls_ms_tokens");
+        if (raw) token = JSON.parse(raw).access_token ?? "";
+      } catch {}
+
+      if (token) {
+        src = `/api/stream?id=${encodeURIComponent(song.id)}&t=${encodeURIComponent(token)}`;
       }
-    } catch {
-      // fall back to streaming
     }
 
+    if (!src) {
+      console.warn("[Player] No URL for song:", song.name);
+      return;
+    }
     audio.src = src;
+
     if (autoPlay) {
-      await audio.play().catch(() => {});
+      const playPromise = audio.play();
+      if (playPromise) {
+        playPromise.catch((err: Error) => {
+          // AbortError is expected when the user switches songs before the
+          // previous play() resolves — not a real error, safe to ignore.
+          if (err.name !== "AbortError") {
+            console.error("[Player] play() rejected:", err.name, err.message);
+          }
+        });
+      }
     }
 
-    // Update play count
-    try {
-      const existing = await getSong(song.id);
+    // Update play count in background
+    getSong(song.id).then((existing) => {
       if (existing) {
-        await saveSong({
+        saveSong({
           ...existing,
           playCount: (existing.playCount ?? 0) + 1,
           lastPlayedAt: new Date().toISOString(),
         });
       }
-    } catch {
-      // non-critical
-    }
+    }).catch(() => {});
   }, []);
 
   const play = useCallback(
-    async (song: Song, queue?: Song[], index?: number) => {
+    (song: Song, queue?: Song[], index?: number) => {
       const newQueue = queue ?? state.queue;
       const newIndex = index ?? newQueue.findIndex((s) => s.id === song.id);
 
@@ -104,7 +122,8 @@ export function usePlayer() {
         queueIndex: newIndex,
       }));
 
-      await loadSong(song);
+      // Don't await — keeps user gesture context alive for audio.play()
+      loadSong(song);
     },
     [state.queue, loadSong]
   );
@@ -113,7 +132,7 @@ export function usePlayer() {
     const audio = audioRef.current;
     if (!audio) return;
     if (audio.paused) {
-      audio.play().catch(() => {});
+      audio.play().catch((err: Error) => console.error("[Player] togglePlay failed:", err.message));
     } else {
       audio.pause();
     }
@@ -140,29 +159,29 @@ export function usePlayer() {
         audioRef.current?.play().catch(() => {});
         return s;
       }
-      let nextIndex = s.queueIndex + 1;
-      if (s.shuffle) {
-        nextIndex = Math.floor(Math.random() * s.queue.length);
-      }
+      let nextIndex = s.shuffle
+        ? Math.floor(Math.random() * s.queue.length)
+        : s.queueIndex + 1;
       if (nextIndex >= s.queue.length) {
-        if (s.repeat === "all") {
-          nextIndex = 0;
-        } else {
-          return { ...s, isPlaying: false };
-        }
+        if (s.repeat === "all") nextIndex = 0;
+        else return { ...s, isPlaying: false };
       }
       const nextSong = s.queue[nextIndex];
-      loadSong(nextSong);
+      if (nextSong) loadSong(nextSong);
       return { ...s, currentSong: nextSong, queueIndex: nextIndex };
     });
   }, [loadSong]);
 
+  // Keep ref in sync so the event listener always has the latest version
+  useEffect(() => {
+    handleEndedRef.current = handleEnded;
+  }, [handleEnded]);
+
   const playNext = useCallback(() => {
     setState((s) => {
-      let nextIndex = s.shuffle
+      const nextIndex = s.shuffle
         ? Math.floor(Math.random() * s.queue.length)
-        : s.queueIndex + 1;
-      if (nextIndex >= s.queue.length) nextIndex = 0;
+        : (s.queueIndex + 1) % s.queue.length;
       const nextSong = s.queue[nextIndex];
       if (nextSong) loadSong(nextSong);
       return { ...s, currentSong: nextSong ?? s.currentSong, queueIndex: nextIndex };
@@ -171,7 +190,6 @@ export function usePlayer() {
 
   const playPrev = useCallback(() => {
     const audio = audioRef.current;
-    // If more than 3s in, restart current
     if (audio && audio.currentTime > 3) {
       audio.currentTime = 0;
       return;
@@ -184,30 +202,25 @@ export function usePlayer() {
     });
   }, [loadSong]);
 
-  const toggleShuffle = useCallback(() => {
-    setState((s) => ({ ...s, shuffle: !s.shuffle }));
-  }, []);
+  const toggleShuffle = useCallback(() =>
+    setState((s) => ({ ...s, shuffle: !s.shuffle })), []);
 
   const cycleRepeat = useCallback(() => {
     setState((s) => {
       const modes: PlayerState["repeat"][] = ["none", "all", "one"];
-      const next = modes[(modes.indexOf(s.repeat) + 1) % modes.length];
-      return { ...s, repeat: next };
+      return { ...s, repeat: modes[(modes.indexOf(s.repeat) + 1) % modes.length] };
     });
   }, []);
 
   const downloadSong = useCallback(async (song: Song) => {
     const existing = await getCachedAudio(song.id);
     if (existing) return;
-
     const res = await fetch(song.downloadUrl);
+    if (!res.ok) throw new Error(`Download failed: ${res.status}`);
     const blob = await res.blob();
     await cacheAudio(song.id, blob);
-
     const dbSong = await getSong(song.id);
-    if (dbSong) {
-      await saveSong({ ...dbSong, isDownloaded: true });
-    }
+    if (dbSong) await saveSong({ ...dbSong, isDownloaded: true });
   }, []);
 
   return {

@@ -147,7 +147,7 @@ export default function Home() {
             <span className="font-brand text-sm font-semibold text-white/80 truncate">
               {library.activePlaylistId
                 ? (library.playlists.find((p) => p.id === library.activePlaylistId)?.name ?? "Playlist")
-                : "PVLS Player"}
+                : "pvls player"}
             </span>
           </div>
 
@@ -255,7 +255,8 @@ export default function Home() {
         settings={settings}
         onUpdate={updateSettings}
         isAuthenticated={isAuthenticated}
-        onLogin={login}
+        authError={auth.error}
+        onLogin={() => login()}
         onLogout={logout}
       />
     </div>

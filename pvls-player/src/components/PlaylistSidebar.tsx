@@ -60,9 +60,11 @@ export function PlaylistSidebar({
 
       <motion.aside
         className={cn(
-          "fixed left-0 top-0 bottom-0 z-40 w-64",
+          "fixed left-0 top-0 z-40 w-64",
+          "bottom-20 lg:bottom-0", // stop above PlayerBar on mobile
           "bg-[#0d0d0d] border-r border-white/[0.06] flex flex-col",
           "lg:relative lg:z-auto lg:translate-x-0",
+          "lg:pb-20", // on desktop the PlayerBar is fixed and overlaps the bottom — pad it out
           "transition-transform duration-300",
           isOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         )}
