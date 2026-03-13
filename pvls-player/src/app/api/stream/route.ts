@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
     `?$select=id,%40microsoft.graph.downloadUrl&$top=200`;
 
   while (nextLink) {
-    const res = await fetch(nextLink, {
+    const res: Response = await fetch(nextLink, {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(10_000),
     });
