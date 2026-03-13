@@ -92,4 +92,5 @@ test_analyze.rs
 # but ignore the VST workspace lock (it's in its own workspace)
 dbundone-vst/Cargo.lock
 
-
+pvls-player/.next/
+pvls-player/.next

@@ -28,6 +28,7 @@ interface NowPlayingProps {
   onOpenModal?: (song: Song) => void;
   onDownload?: (song: Song) => void;
   showWaveform?: boolean;
+  accentColor?: string;
 }
 
 export function NowPlaying({
@@ -46,6 +47,7 @@ export function NowPlaying({
   onOpenModal,
   onDownload,
   showWaveform = true,
+  accentColor,
 }: NowPlayingProps) {
   const waveRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WaveSurfer | null>(null);
@@ -54,16 +56,22 @@ export function NowPlaying({
   const displayName = currentSong?.customName ?? currentSong?.name ?? "";
   const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
 
-  // WaveSurfer setup
+  // WaveSurfer setup — re-create when song or accent color changes
   useEffect(() => {
     if (!open || !showWaveform || !waveRef.current || !currentSong?.url) return;
 
     wsRef.current?.destroy();
 
+    // WaveSurfer uses Canvas, so CSS vars don't work. Read the computed value.
+    const hsl = typeof document !== "undefined"
+      ? getComputedStyle(document.documentElement).getPropertyValue("--accent-hsl").trim()
+      : "238 87% 67%";
+    const progressColor = `hsl(${hsl || "238 87% 67%"})`;
+
     const ws = WaveSurfer.create({
       container: waveRef.current,
       waveColor: "rgba(255,255,255,0.12)",
-      progressColor: "hsl(var(--accent-hsl, 238 87% 67%))",
+      progressColor,
       cursorColor: "transparent",
       barWidth: 2,
       barGap: 1,
@@ -84,7 +92,9 @@ export function NowPlaying({
       ws.destroy();
       wsRef.current = null;
     };
-  }, [open, currentSong?.url, showWaveform]);
+  // accentColor triggers re-create so waveform colour stays in sync with theme
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, currentSong?.url, showWaveform, accentColor]);
 
   // Sync playback position to waveform
   useEffect(() => {

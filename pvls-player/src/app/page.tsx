@@ -109,6 +109,17 @@ export default function Home() {
     [player, library]
   );
 
+  // Keep modal and player bar/now-playing in sync with live library state
+  const liveSong = modalSong
+    ? (library.songs.find((s) => s.id === modalSong.id) ?? modalSong)
+    : null;
+
+  const liveCurrentSong = player.state.currentSong
+    ? (library.songs.find((s) => s.id === player.state.currentSong!.id) ?? player.state.currentSong)
+    : null;
+
+  const livePlayerState = { ...player.state, currentSong: liveCurrentSong };
+
   if (!loaded || auth.loading) {
     return (
       <div className="flex items-center justify-center h-dvh bg-[#0a0a0a]">
@@ -206,7 +217,7 @@ export default function Home() {
       </div>
 
       <PlayerBar
-        state={player.state}
+        state={livePlayerState}
         onTogglePlay={player.togglePlay}
         onSeek={player.seek}
         onVolume={player.setVolume}
@@ -222,7 +233,7 @@ export default function Home() {
       <NowPlaying
         open={nowPlayingOpen}
         onClose={() => setNowPlayingOpen(false)}
-        state={player.state}
+        state={livePlayerState}
         onTogglePlay={player.togglePlay}
         onSeek={player.seek}
         onVolume={player.setVolume}
@@ -235,11 +246,12 @@ export default function Home() {
         onOpenModal={setModalSong}
         onDownload={handleDownload}
         showWaveform={settings.showWaveform}
+        accentColor={settings.accentColor}
       />
 
-      {modalSong && (
+      {liveSong && (
         <SongModal
-          song={modalSong}
+          song={liveSong}
           playlists={library.playlists}
           onClose={() => setModalSong(null)}
           onUpdateSong={(id, patch) => library.updateSong(id, patch)}

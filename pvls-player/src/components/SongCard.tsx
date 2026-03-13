@@ -197,8 +197,8 @@ export function SongCard({
         </div>
       )}
 
-      {/* Actions */}
-      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+      {/* Actions — always visible on mobile, hover-reveal on desktop */}
+      <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
         {!song.isDownloaded ? (
           <button
             className="w-7 h-7 rounded-lg hover:bg-white/10 flex items-center justify-center transition-colors"
