@@ -92,5 +92,6 @@ test_analyze.rs
 # but ignore the VST workspace lock (it's in its own workspace)
 dbundone-vst/Cargo.lock
 
-pvls-player/.next/
-pvls-player/.next
+# pvls-player is its own app and is developed on the `pvls-player` branch —
+# never track it on main.
+pvls-player/
