@@ -35,6 +35,7 @@ interface ArtworkManagerProps {
   onGenerateArtwork: (project: Project) => Promise<void>
   onFetchUnsplashPhoto: (project: Project) => Promise<void>
   onRefresh: () => void
+  withHistory?: boolean
 }
 
 const SOURCE_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
@@ -141,6 +142,7 @@ export const ArtworkManager: React.FC<ArtworkManagerProps> = ({
   onGenerateArtwork,
   onFetchUnsplashPhoto,
   onRefresh,
+  withHistory = true,
 }) => {
   const [history, setHistory] = useState<ArtworkHistoryEntry[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -148,6 +150,7 @@ export const ArtworkManager: React.FC<ArtworkManagerProps> = ({
   const artworkUrl = useImageUrl(project.artworkPath)
 
   const loadHistory = useCallback(async () => {
+    if (!withHistory) return
     setIsLoading(true)
     try {
       const entries = await window.electron?.getArtworkHistory(project.id)
@@ -157,7 +160,7 @@ export const ArtworkManager: React.FC<ArtworkManagerProps> = ({
     } finally {
       setIsLoading(false)
     }
-  }, [project.id])
+  }, [project.id, withHistory])
 
   useEffect(() => {
     if (isOpen) {
@@ -338,7 +341,7 @@ export const ArtworkManager: React.FC<ArtworkManagerProps> = ({
           </div>
 
           {/* History Section */}
-          <div>
+          {withHistory && <div>
             <div className="flex items-center gap-2 mb-3">
               <Clock className="w-4 h-4 text-muted-foreground" />
               <h3 className="text-sm font-medium text-foreground">Artwork History</h3>
@@ -374,7 +377,7 @@ export const ArtworkManager: React.FC<ArtworkManagerProps> = ({
                 </AnimatePresence>
               </div>
             )}
-          </div>
+          </div>}
         </div>
       </DialogContent>
     </Dialog>

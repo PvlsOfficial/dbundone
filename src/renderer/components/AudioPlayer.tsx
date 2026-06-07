@@ -15,10 +15,14 @@ import {
   Repeat1,
   Shuffle,
   Maximize2,
+  Minimize2,
+  ExternalLink,
   ChevronUp,
   ChevronDown,
+  Star,
 } from "lucide-react"
 import { cn, assetUrl } from "@/lib/utils"
+import { computePeaksViaWebAudio } from "@/lib/audioPeaks"
 import { useImageUrl } from "@/hooks/useImageUrl"
 import { Slider, Tooltip, TooltipContent, TooltipTrigger, TooltipProvider, Badge } from "@/components/ui"
 import { AudioPlayerState, Project } from "@shared/types"
@@ -30,6 +34,7 @@ interface AudioPlayerProps {
   projects: Project[]
   onOpenProject?: (project: Project) => void
   onPlayProject?: (project: Project) => void
+  onRateProject?: (project: Project, rating: number) => void
 }
 
 type RepeatMode = "off" | "all" | "one"
@@ -45,6 +50,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   projects,
   onOpenProject,
   onPlayProject,
+  onRateProject,
 }) => {
   const artworkUrl = useImageUrl(playerState.currentTrack?.artworkPath)
   const audioRef = useRef<HTMLAudioElement | null>(null) // HTML5 Audio fallback
@@ -58,6 +64,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const [repeatMode, setRepeatMode] = useState<RepeatMode>("off")
   const [isShuffled, setIsShuffled] = useState(false)
   const [isExpanded, setIsExpanded] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [fsHoverRating, setFsHoverRating] = useState(0)
   const [shuffledQueue, setShuffledQueue] = useState<Project[]>([])
   const [waveformPeaks, setWaveformPeaks] = useState<number[]>([])
   const [waveformLoading, setWaveformLoading] = useState(false)
@@ -207,8 +215,25 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
     const loadWaveform = async () => {
       try {
-        const peaks = await window.electron?.computeAudioPeaks(audioPath, 150)
+        let peaks: number[] | null | undefined
+        try {
+          peaks = await window.electron?.computeAudioPeaks(audioPath, 150)
+        } catch (err) {
+          // Rust decode failed (e.g. unsupported codec) — fall through to fallback
+          console.warn("Rust waveform compute failed, trying browser decoder:", err)
+          peaks = null
+        }
         if (thisRequest !== waveformRequestRef.current) return
+
+        // Fallback: symphonia can't decode some formats the WebView can play
+        // (notably Opus-in-Ogg). Decode in the browser and persist for next time.
+        if (!peaks || peaks.length === 0) {
+          peaks = await computePeaksViaWebAudio(audioPath, 150)
+          if (thisRequest !== waveformRequestRef.current) return
+          if (peaks && peaks.length > 0) {
+            void window.electron?.cacheAudioPeaks?.(audioPath, peaks, 150)
+          }
+        }
 
         if (peaks && peaks.length > 0) {
           setWaveformPeaks(peaks)
@@ -284,6 +309,12 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     waveformRafRef.current = requestAnimationFrame(tick)
     return () => { running = false; cancelAnimationFrame(waveformRafRef.current) }
   }, [waveformPeaks, accentColor, isExpanded, playerState.isPlaying])
+
+  // Redraw on seek while paused (rAF loop above is only active while playing)
+  useEffect(() => {
+    if (playerState.isPlaying) return
+    drawWaveformRef.current()
+  }, [localCurrentTime, playerState.isPlaying])
 
   // Redraw on resize (throttled)
   useEffect(() => {
@@ -650,27 +681,51 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                 </Badge>
               )}
 
+              {/* Star rating for current track */}
+              {onRateProject && playerState.currentTrack && (() => {
+                const track = playerState.currentTrack
+                const trackRating = track.rating ?? 0
+                return (
+                  <div className="flex items-center gap-0.5">
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <button
+                        key={star}
+                        type="button"
+                        onClick={() => onRateProject(track, trackRating === star ? 0 : star)}
+                        className="transition-transform hover:scale-110 active:scale-95"
+                        aria-label={`Rate ${star} star${star !== 1 ? 's' : ''}`}
+                      >
+                        <Star
+                          className="w-3.5 h-3.5 transition-colors"
+                          fill={star <= trackRating ? "currentColor" : "none"}
+                          style={{ color: star <= trackRating ? "var(--primary)" : undefined }}
+                          strokeWidth={star <= trackRating ? 0 : 1.5}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                )
+              })()}
+
               <div className="flex items-center gap-2 w-32">
-                <button onClick={toggleMute} className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground transition-colors" title="Toggle mute">
+                <button type="button" onClick={toggleMute} className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground transition-colors" title="Toggle mute">
                   {getVolumeIcon()}
                 </button>
                 <Slider value={[playerState.volume]} onValueChange={handleVolumeChange} max={1} step={0.01} className="w-20" />
               </div>
 
-              {onOpenProject && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      onClick={() => playerState.currentTrack && onOpenProject(playerState.currentTrack)}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-all"
-                      title="Open Project"
-                    >
-                      <Maximize2 className="w-4 h-4" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>Open Project</TooltipContent>
-                </Tooltip>
-              )}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => setIsFullscreen(true)}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-all"
+                    title="Fullscreen"
+                  >
+                    <Maximize2 className="w-4 h-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>Fullscreen</TooltipContent>
+              </Tooltip>
 
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -683,6 +738,183 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
             </div>
           </div>
         </motion.div>
+      </AnimatePresence>
+
+      {/* Fullscreen overlay */}
+      <AnimatePresence>
+        {isFullscreen && playerState.currentTrack && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+            className="fixed inset-0 z-[200] flex flex-col items-center justify-center overflow-hidden"
+          >
+            {/* Blurred artwork background */}
+            <div className="absolute inset-0">
+              {artworkUrl ? (
+                <img
+                  src={artworkUrl}
+                  alt=""
+                  className="w-full h-full object-cover scale-110"
+                  style={{ filter: "blur(40px) brightness(0.35) saturate(1.4)" }}
+                />
+              ) : (
+                <div
+                  className="w-full h-full"
+                  style={{ background: `radial-gradient(ellipse at center, ${hexToRgba(accentColor, 0.3)} 0%, #000 70%)` }}
+                />
+              )}
+              <div className="absolute inset-0 bg-black/50" />
+            </div>
+
+            {/* Close button */}
+            <button
+              type="button"
+              onClick={() => setIsFullscreen(false)}
+              className="absolute top-6 right-6 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white transition-all backdrop-blur-sm"
+            >
+              <Minimize2 className="w-5 h-5" />
+            </button>
+
+            {/* Open project button */}
+            {onOpenProject && (
+              <button
+                type="button"
+                onClick={() => { onOpenProject(playerState.currentTrack!); setIsFullscreen(false) }}
+                className="absolute top-6 left-6 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white transition-all backdrop-blur-sm"
+                title="Open Project"
+              >
+                <ExternalLink className="w-5 h-5" />
+              </button>
+            )}
+
+            {/* Content */}
+            <div className="relative z-10 flex flex-col items-center gap-8 w-full max-w-lg px-8">
+              {/* Artwork */}
+              <motion.div
+                initial={{ scale: 0.85, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ delay: 0.1, type: "spring", stiffness: 200, damping: 20 }}
+                className="w-64 h-64 rounded-2xl overflow-hidden shadow-2xl flex-shrink-0"
+                style={{ boxShadow: `0 30px 80px ${hexToRgba(accentColor, 0.4)}` }}
+              >
+                {artworkUrl ? (
+                  <img src={artworkUrl} alt={playerState.currentTrack.title} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full bg-gradient-to-br from-primary/30 to-primary/5 flex items-center justify-center">
+                    <Music className="w-20 h-20 text-primary/50" />
+                  </div>
+                )}
+              </motion.div>
+
+              {/* Track info + stars */}
+              <div className="text-center w-full">
+                <h2 className="text-2xl font-bold text-white truncate">{playerState.currentTrack.title}</h2>
+                <p className="text-white/60 text-sm mt-1">
+                  {[playerState.currentTrack.artists, playerState.currentTrack.genre].filter(Boolean).join(" · ")}
+                  {playerState.currentTrack.bpm > 0 && ` · ${playerState.currentTrack.bpm} BPM`}
+                </p>
+
+                {/* Star rating */}
+                {onRateProject && (
+                  <div
+                    className="flex items-center justify-center gap-1.5 mt-3"
+                    onMouseLeave={() => setFsHoverRating(0)}
+                  >
+                    {[1, 2, 3, 4, 5].map((star) => {
+                      const active = star <= (fsHoverRating || (playerState.currentTrack!.rating ?? 0))
+                      return (
+                        <button
+                          key={star}
+                          type="button"
+                          onMouseEnter={() => setFsHoverRating(star)}
+                          onClick={() => onRateProject(playerState.currentTrack!, (playerState.currentTrack!.rating ?? 0) === star ? 0 : star)}
+                          className="transition-transform hover:scale-125 active:scale-95"
+                        >
+                          <Star
+                            className="w-6 h-6 transition-colors drop-shadow"
+                            fill={active ? "currentColor" : "none"}
+                            style={{ color: active ? "#ffffff" : "rgba(255,255,255,0.3)" }}
+                            strokeWidth={active ? 0 : 1.5}
+                          />
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Progress bar */}
+              <div className="w-full">
+                <div
+                  className="w-full h-1.5 rounded-full bg-white/20 cursor-pointer relative overflow-hidden"
+                  onClick={handleSeek}
+                >
+                  <div
+                    className="absolute left-0 top-0 h-full rounded-full transition-all duration-100"
+                    style={{
+                      width: `${localDuration > 0 ? (localCurrentTime / localDuration) * 100 : 0}%`,
+                      background: accentColor,
+                    }}
+                  />
+                </div>
+                <div className="flex justify-between mt-1.5 text-xs text-white/50 font-mono">
+                  <span>{formatTime(localCurrentTime)}</span>
+                  <span>{formatTime(localDuration)}</span>
+                </div>
+              </div>
+
+              {/* Controls */}
+              <div className="flex items-center gap-6">
+                <button
+                  type="button"
+                  onClick={() => setIsShuffled(!isShuffled)}
+                  className={cn("transition-all", isShuffled ? "text-white" : "text-white/40 hover:text-white/70")}
+                  style={isShuffled ? { color: accentColor } : {}}
+                >
+                  <Shuffle className="w-5 h-5" />
+                </button>
+
+                <button type="button" onClick={handlePrevious} className="text-white/80 hover:text-white transition-colors">
+                  <SkipBack className="w-7 h-7" fill="currentColor" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handlePlayPause}
+                  className="w-16 h-16 rounded-full flex items-center justify-center shadow-2xl transition-all hover:scale-105 active:scale-95"
+                  style={{ background: accentColor, boxShadow: `0 8px 32px ${hexToRgba(accentColor, 0.5)}` }}
+                >
+                  {playerState.isPlaying
+                    ? <Pause className="w-7 h-7 text-white" />
+                    : <Play className="w-7 h-7 text-white ml-1" />}
+                </button>
+
+                <button type="button" onClick={handleNext} className="text-white/80 hover:text-white transition-colors">
+                  <SkipForward className="w-7 h-7" fill="currentColor" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={cycleRepeatMode}
+                  className={cn("transition-all", repeatMode !== "off" ? "text-white" : "text-white/40 hover:text-white/70")}
+                  style={repeatMode !== "off" ? { color: accentColor } : {}}
+                >
+                  {getRepeatIcon()}
+                </button>
+              </div>
+
+              {/* Volume */}
+              <div className="flex items-center gap-3 w-48">
+                <button type="button" onClick={toggleMute} className="text-white/50 hover:text-white/80 transition-colors">
+                  {getVolumeIcon()}
+                </button>
+                <Slider value={[playerState.volume]} onValueChange={handleVolumeChange} max={1} step={0.01} className="flex-1" />
+              </div>
+            </div>
+          </motion.div>
+        )}
       </AnimatePresence>
     </TooltipProvider>
   )

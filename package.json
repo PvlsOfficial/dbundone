@@ -61,6 +61,7 @@
     "@tauri-apps/plugin-os": "^2.3.2",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-shell": "^2.3.5",
+    "@tldraw/tldraw": "^4.4.1",
     "@wavesurfer/react": "^1.0.12",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",

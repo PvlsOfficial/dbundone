@@ -36,6 +36,7 @@ import {
   PartyPopper,
   Headphones,
   Download,
+  FolderOpen,
   ListTodo,
   Plug,
   Circle,
@@ -221,6 +222,11 @@ export const SharedProjectDetail: React.FC<SharedProjectDetailProps> = ({
   const [volume, setVolume] = useState(0.8)
   const [peaks, setPeaks] = useState<number[]>([])
 
+  // ── Local cache state (per shared version) ─────────────────────────────
+  // Map of versionId → local file path. Set on download or on initial detection.
+  const [localPaths, setLocalPaths] = useState<Record<string, string>>({})
+  const [downloadingVersionId, setDownloadingVersionId] = useState<string | null>(null)
+
   // ── Annotation state ───────────────────────────────────────────────────
   const [annotations, setAnnotations] = useState<SharedAnnotation[]>(selectedVersion?.annotations || [])
   const [showAddAnnotation, setShowAddAnnotation] = useState(false)
@@ -350,6 +356,47 @@ export const SharedProjectDetail: React.FC<SharedProjectDetailProps> = ({
   }, [selectedVersion?.fileUrl])
 
   useEffect(() => { if (audioRef.current) audioRef.current.volume = volume }, [volume])
+
+  // ── Detect existing local downloads for each version ───────────────────
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const result: Record<string, string> = {}
+      for (const v of allVersions) {
+        try {
+          const path = await window.electron?.getSharedFilePath(share.id, share.projectTitle, v.fileName)
+          if (path) result[v.id] = path
+        } catch { /* ignore */ }
+      }
+      if (!cancelled) setLocalPaths(prev => ({ ...prev, ...result }))
+    })()
+    return () => { cancelled = true }
+  }, [share.id, share.projectTitle, allVersions.map(v => v.id).join(',')])
+
+  const handleDownloadVersion = async (v: SharedVersion) => {
+    if (downloadingVersionId === v.id) return
+    setDownloadingVersionId(v.id)
+    try {
+      const path = await window.electron?.downloadSharedFile(share.id, share.projectTitle, v.fileName, v.fileUrl)
+      if (path) setLocalPaths(prev => ({ ...prev, [v.id]: path }))
+    } catch (e: any) {
+      console.error('[SharedDetail] Download failed:', e?.message || e)
+    } finally {
+      setDownloadingVersionId(null)
+    }
+  }
+
+  const handleRevealVersion = async (v: SharedVersion) => {
+    let path = localPaths[v.id]
+    if (!path) {
+      // Auto-download first, then reveal
+      await handleDownloadVersion(v)
+      path = (await window.electron?.getSharedFilePath(share.id, share.projectTitle, v.fileName)) || ''
+    }
+    if (path) {
+      try { await window.electron?.revealInFolder(path) } catch {}
+    }
+  }
 
   // ── Waveform drawing ───────────────────────────────────────────────────
   drawRef.current = () => {
@@ -741,9 +788,43 @@ export const SharedProjectDetail: React.FC<SharedProjectDetailProps> = ({
               {/* Audio player */}
               {allVersions.length > 0 ? (
                 <div className="p-4 rounded-xl border border-border/30 bg-card/50">
-                  <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-2">
-                    <FileAudio className="w-3.5 h-3.5" /> Audio Versions
-                  </h3>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+                      <FileAudio className="w-3.5 h-3.5" /> Audio Versions
+                    </h3>
+                    {selectedVersion && (
+                      <div className="flex items-center gap-1.5">
+                        {localPaths[selectedVersion.id] ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleRevealVersion(selectedVersion)}
+                            className="h-7 gap-1.5 text-xs"
+                            title="Show in folder"
+                          >
+                            <FolderOpen className="w-3 h-3" />
+                            Show in folder
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleDownloadVersion(selectedVersion)}
+                            disabled={downloadingVersionId === selectedVersion.id}
+                            className="h-7 gap-1.5 text-xs"
+                            title="Download to local folder"
+                          >
+                            {downloadingVersionId === selectedVersion.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Download className="w-3 h-3" />
+                            )}
+                            Download
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
                   {/* Version selector */}
                   {allVersions.length > 1 && (

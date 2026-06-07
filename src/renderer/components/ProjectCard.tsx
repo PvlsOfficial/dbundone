@@ -1,5 +1,5 @@
 import React, { useState, useEffect, memo, useCallback, useRef } from "react"
-import { Play, Pause, Music, ExternalLink, Check, Sparkles, Loader2, Image, ImagePlus, Trash2, FolderOpen, Shuffle, Clock, Lightbulb, Headphones, Disc3, CheckCircle2, PartyPopper, Archive, Share2 } from "lucide-react"
+import { Play, Pause, Music, ExternalLink, Check, Sparkles, Loader2, Image, ImagePlus, Trash2, FolderOpen, Shuffle, Clock, Lightbulb, Headphones, Disc3, CheckCircle2, PartyPopper, Archive, Share2, Star } from "lucide-react"
 import { Project, Tag, PluginSession } from "@shared/types"
 import { PluginStatusIcon } from "./PluginStatus"
 import { cn, formatTimeSpent } from "@/lib/utils"
@@ -34,6 +34,7 @@ interface ProjectCardProps {
   onOpenArtworkManager?: (project: Project) => void
   pluginSessions?: PluginSession[]
   shareStatus?: 'pending' | 'accepted' | 'mixed'
+  onRateProject?: (project: Project, rating: number) => void
 }
 
 // Status config defined outside component to avoid re-creation
@@ -75,6 +76,7 @@ function arePropsEqual(prev: ProjectCardProps, next: ProjectCardProps): boolean 
     prev.pluginSessions === next.pluginSessions &&
     prev.project.shareCount === next.project.shareCount &&
     prev.shareStatus === next.shareStatus &&
+    prev.project.rating === next.project.rating &&
     // Compare tag arrays by reference first, then content
     (prev.project.tags === next.project.tags ||
       (prev.project.tags?.length === next.project.tags?.length &&
@@ -106,6 +108,7 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
     aiArtworkEnabled = true,
     onOpenArtworkManager,
     pluginSessions = [],
+    onRateProject,
   } = props
 
   // Only load image when card is visible (lazy loading)
@@ -113,6 +116,7 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
   const [isHovered, setIsHovered] = useState(false)
   const [imageError, setImageError] = useState(false)
   const [isGeneratingArt, setIsGeneratingArt] = useState(false)
+  const [hoverRating, setHoverRating] = useState(0)
 
   // Reset error state when artwork URL changes (new image loaded)
   useEffect(() => {
@@ -196,6 +200,44 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
       }
     }
   }, [project.dawProjectPath])
+
+  const handleStarClick = useCallback((e: React.MouseEvent, stars: number) => {
+    e.stopPropagation()
+    if (onRateProject) {
+      // clicking the same rating again clears it
+      onRateProject(project, (project.rating ?? 0) === stars ? 0 : stars)
+    }
+  }, [onRateProject, project])
+
+  const renderStars = useCallback((size: "sm" | "xs" = "sm") => {
+    const starSize = size === "xs" ? "w-3 h-3" : "w-3.5 h-3.5"
+    const activeRating = hoverRating || (project.rating ?? 0)
+    return (
+      <div
+        className="flex items-center gap-0.5"
+        onMouseLeave={() => setHoverRating(0)}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {[1, 2, 3, 4, 5].map((star) => (
+          <button
+            key={star}
+            type="button"
+            onMouseEnter={() => setHoverRating(star)}
+            onClick={(e) => handleStarClick(e, star)}
+            className="transition-transform hover:scale-110 active:scale-95"
+            aria-label={`Rate ${star} star${star !== 1 ? 's' : ''}`}
+          >
+            <Star
+              className={cn(starSize, "transition-colors")}
+              fill={star <= activeRating ? "currentColor" : "none"}
+              style={{ color: star <= activeRating ? "var(--primary)" : undefined }}
+              strokeWidth={star <= activeRating ? 0 : 1.5}
+            />
+          </button>
+        ))}
+      </div>
+    )
+  }, [hoverRating, project.rating, handleStarClick])
 
   const getDawBadge = useCallback(() => {
     const dawType = project.dawType?.toLowerCase() || ""
@@ -484,6 +526,9 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
                       </div>
                     )}
 
+                    {/* Star Rating */}
+                    {renderStars("xs")}
+
                     {/* Created/Updated Dates */}
                     <div className="text-xs text-muted-foreground/70">
                       <div>Created: {new Date(project.createdAt).toLocaleDateString()}</div>
@@ -699,7 +744,12 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
                     </div>
                   )}
 
-                  {/* Row 3: collection + date */}
+                  {/* Row 3: stars */}
+                  <div className="mt-1">
+                    {renderStars("xs")}
+                  </div>
+
+                  {/* Row 4: collection + date */}
                   {(project.collectionName || project.createdAt) && (
                     <div className="flex items-center gap-1.5 mt-0.5 text-[9px] text-white/50 truncate leading-tight">
                       {project.collectionName && (
@@ -1040,6 +1090,9 @@ export const ProjectCard = memo((props: ProjectCardProps) => {
                 )}>
                   {project.collectionName || '\u00A0'}
                 </div>
+
+                {/* Star rating */}
+                {renderStars(gridSize === "large" ? "sm" : "xs")}
               </div>
 
               {/* Generating Art Overlay */}

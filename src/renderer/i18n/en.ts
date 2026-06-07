@@ -3,6 +3,7 @@ export default {
   "nav.projects": "Projects",
   "nav.groups": "Collections",
   "nav.projectBoard": "Project Board",
+  "nav.board": "Board",
   "nav.statistics": "Statistics",
   "nav.shared": "Shared",
   "nav.settings": "Settings",
@@ -152,6 +153,7 @@ export default {
   "settings.daw.desc.GarageBand": "GarageBand projects (.band) — macOS only",
   "settings.daw.desc.LMMS": "LMMS projects (.mmp, .mmpz)",
   "settings.daw.desc.Cakewalk": "Cakewalk / SONAR projects (.cwp)",
+  "settings.daw.desc.Waveform": "Tracktion Waveform projects (.tracktionedit) — full metadata & plugin extraction",
 
   // AI Artwork Section
   "settings.ai.title": "AI Artwork Generation",

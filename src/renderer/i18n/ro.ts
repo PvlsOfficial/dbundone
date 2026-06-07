@@ -152,6 +152,7 @@ export default {
   "settings.daw.desc.GarageBand": "Proiecte GarageBand (.band) — doar macOS",
   "settings.daw.desc.LMMS": "Proiecte LMMS (.mmp, .mmpz)",
   "settings.daw.desc.Cakewalk": "Proiecte Cakewalk / SONAR (.cwp)",
+  "settings.daw.desc.Waveform": "Proiecte Tracktion Waveform (.tracktionedit) — extragere completă de metadate şi plugin-uri",
 
   // AI Artwork Section
   "settings.ai.title": "Generare artă cu AI",

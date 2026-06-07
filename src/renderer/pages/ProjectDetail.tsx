@@ -74,10 +74,12 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
   import PluginStatus, { PluginStatusIcon } from "@/components/PluginStatus"
   import { ProjectAnalysis } from "@/components/ProjectAnalysis"
   import { ProjectKanban } from "@/components/ProjectKanban"
+  import { ProjectCanvas } from "@/components/ProjectCanvas"
+  import type { CanvasMode } from "@/components/canvas/CanvasOverlay"
   import { CollaborationPanel } from "@/components/CollaborationPanel"
   import { useAuth } from "@/contexts/AuthContext"
   import { syncVersionToShares } from "@/lib/sharingService"
-  import { Project, ProjectStatus, AudioVersion, Annotation, AudioPlayerState, Tag, PluginSession, Task, DistributionLink } from "@shared/types"
+  import { Project, ProjectStatus, AudioVersion, Annotation, AudioPlayerState, Tag, PluginSession, Task, DistributionLink, AppSettings } from "@shared/types"
 
   // Helper to convert hex to rgba
   const hexToRgba = (hex: string, alpha: number) => {
@@ -106,6 +108,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
     onStartPluginRecording?: (sessionId: string) => Promise<void>
     onStopPluginRecording?: (sessionId: string) => Promise<void>
     onToggleOfflineCapture?: (sessionId: string, enabled: boolean) => void
+    settings?: AppSettings
   }
 
   const ANNOTATION_COLORS = [
@@ -208,7 +211,9 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
     onStartPluginRecording,
     onStopPluginRecording,
     onToggleOfflineCapture,
+    settings,
   }) => {
+    const experimentalCanvasBoards = settings?.experimentalCanvasBoards ?? false
 
 
     // Helper to get tag color from tags list
@@ -319,6 +324,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
 
     // Distribution links state
     const [distributionLinks, setDistributionLinks] = useState<DistributionLink[]>([])
+    const [canvasMode, setCanvasMode] = useState<CanvasMode>("normal")
     const [addingPlatform, setAddingPlatform] = useState<string | null>(null)
     const [newLinkUrl, setNewLinkUrl] = useState("")
     const [newLinkLabel, setNewLinkLabel] = useState("")
@@ -743,10 +749,11 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
       if (optimisticArtworkPath !== undefined && optimisticArtworkPath === project.artworkPath) {
         setOptimisticArtworkPath(undefined)
       }
-      if (optimisticProject && 
+      if (optimisticProject &&
           optimisticProject.title === project.title &&
           optimisticProject.bpm === project.bpm &&
           optimisticProject.status === project.status &&
+          (optimisticProject.rating ?? null) === (project.rating ?? null) &&
           JSON.stringify(optimisticProject.tags) === JSON.stringify(project.tags)) {
         setOptimisticProject(null)
       }
@@ -1221,6 +1228,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
           else if (ext === "ptx") setEditDawType("Pro Tools")
           else if (ext === "cpr") setEditDawType("Cubase")
           else if (ext === "rpp") setEditDawType("Reaper")
+          else if (ext === "tracktionedit") setEditDawType("Waveform")
         }
       } catch (error) {
         console.error("Failed to select project file:", error)
@@ -1239,7 +1247,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
 
     return (
       <TooltipProvider>
-        <div className="flex-1 flex flex-col h-full overflow-hidden bg-background">
+        <div className="relative flex-1 flex flex-col h-full overflow-hidden bg-background">
           {/* Header */}
           <div className="p-4 border-b border-border/30 bg-card/50">
             <div className="flex items-center gap-4">
@@ -1274,6 +1282,33 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                 {/* Project Info */}
                 <div className="flex-1 min-w-0">
                   <h1 className="text-2xl font-bold truncate">{displayProject.title}</h1>
+                  {/* Star Rating */}
+                  <div className="flex items-center gap-0.5 mb-1">
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <button
+                        key={star}
+                        type="button"
+                        title={`Rate ${star} star${star > 1 ? "s" : ""}`}
+                        onClick={async () => {
+                          const newRating = (displayProject.rating ?? 0) === star ? 0 : star
+                          setOptimisticProject({ ...displayProject, rating: newRating })
+                          await window.electron?.updateProject(project.id, { rating: newRating })
+                          onRefresh()
+                        }}
+                        className="p-0.5 rounded transition-transform hover:scale-110"
+                      >
+                        <Star
+                          className={cn(
+                            "w-4 h-4 transition-colors",
+                            star <= (displayProject.rating ?? 0)
+                              ? "text-foreground fill-foreground"
+                              : "text-muted-foreground"
+                          )}
+                        />
+                      </button>
+                    ))}
+                  </div>
+
                   <div className="flex items-center gap-3 text-sm text-muted-foreground">
                     {displayProject.bpm > 0 && (
                       <span>{displayProject.bpm} BPM</span>
@@ -1455,17 +1490,17 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                 transition={{ duration: 0.2, ease: "easeInOut" }}
                 className="overflow-hidden border-b border-border/30 bg-card/30"
               >
-                <div className="p-5 max-w-4xl mx-auto">
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <div className="px-8 py-7">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-10 gap-y-6">
                     {/* Left column */}
-                    <div className="space-y-4">
+                    <div className="space-y-5">
                       {/* Title */}
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-medium text-muted-foreground">Title</label>
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-muted-foreground tracking-wide uppercase">Title</label>
                         <Input
                           value={editTitle}
                           onChange={(e) => setEditTitle(e.target.value)}
-                          className="h-9 font-semibold"
+                          className="h-10 font-semibold"
                           placeholder="Project title"
                         />
                       </div>
@@ -1473,21 +1508,21 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                       {/* Key & BPM row */}
                       <div className="flex gap-3">
                         {project.dawType?.toLowerCase().includes('ableton') && (
-                          <div className="space-y-1.5 w-24">
-                            <label className="text-xs font-medium text-muted-foreground">BPM</label>
+                          <div className="space-y-2 w-28">
+                            <label className="text-xs font-medium text-muted-foreground tracking-wide uppercase">BPM</label>
                             <Input
                               type="number"
                               value={editBpm || ""}
                               onChange={(e) => setEditBpm(parseInt(e.target.value) || 0)}
                               placeholder="120"
-                              className="h-9"
+                              className="h-10"
                             />
                           </div>
                         )}
-                        <div className="space-y-1.5 flex-1">
-                          <label className="text-xs font-medium text-muted-foreground">Key</label>
+                        <div className="space-y-2 flex-1">
+                          <label className="text-xs font-medium text-muted-foreground tracking-wide uppercase">Key</label>
                           <Select value={editKeyRoot} onValueChange={setEditKeyRoot}>
-                            <SelectTrigger className="h-9">
+                            <SelectTrigger className="h-10">
                               <SelectValue placeholder="Key" />
                             </SelectTrigger>
                             <SelectContent>
@@ -1499,10 +1534,10 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                             </SelectContent>
                           </Select>
                         </div>
-                        <div className="space-y-1.5 flex-1">
-                          <label className="text-xs font-medium text-muted-foreground">Scale</label>
+                        <div className="space-y-2 flex-1">
+                          <label className="text-xs font-medium text-muted-foreground tracking-wide uppercase">Scale</label>
                           <Select value={editKeyMode} onValueChange={setEditKeyMode} disabled={editKeyRoot === "None"}>
-                            <SelectTrigger className="h-9">
+                            <SelectTrigger className="h-10">
                               <SelectValue placeholder="Scale" />
                             </SelectTrigger>
                             <SelectContent>
@@ -1518,37 +1553,37 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
 
                       {/* Genre & Artists */}
                       <div className="flex gap-3">
-                        <div className="space-y-1.5 flex-1">
-                          <label className="text-xs font-medium text-muted-foreground">Genre</label>
+                        <div className="space-y-2 flex-1">
+                          <label className="text-xs font-medium text-muted-foreground tracking-wide uppercase">Genre</label>
                           <Input
                             value={editGenre}
                             onChange={(e) => setEditGenre(e.target.value)}
                             placeholder="e.g., Hip Hop, Electronic"
-                            className="h-9"
+                            className="h-10"
                           />
                         </div>
-                        <div className="space-y-1.5 flex-1">
-                          <label className="text-xs font-medium text-muted-foreground">Artists</label>
+                        <div className="space-y-2 flex-1">
+                          <label className="text-xs font-medium text-muted-foreground tracking-wide uppercase">Artists</label>
                           <Input
                             value={editArtists}
                             onChange={(e) => setEditArtists(e.target.value)}
                             placeholder="e.g., Artist name"
-                            className="h-9"
+                            className="h-10"
                           />
                         </div>
                       </div>
 
                       {/* DAW Project File */}
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-medium text-muted-foreground">DAW Project File</label>
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-muted-foreground tracking-wide uppercase">DAW Project File</label>
                         <div className="flex gap-2">
                           <Input
                             value={editDawProjectPath || ""}
                             readOnly
                             placeholder="No file linked"
-                            className="h-9 flex-1 text-xs"
+                            className="h-10 flex-1 text-xs"
                           />
-                          <Button variant="outline" size="sm" onClick={handleSelectProject} className="h-9 px-3">
+                          <Button variant="outline" size="sm" onClick={handleSelectProject} className="h-10 px-3.5">
                             <Folder className="w-3.5 h-3.5" />
                           </Button>
                         </div>
@@ -1556,11 +1591,11 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                     </div>
 
                     {/* Right column - Tags */}
-                    <div className="space-y-3">
-                      <label className="text-xs font-medium text-muted-foreground">Tags</label>
+                    <div className="space-y-4">
+                      <label className="text-xs font-medium text-muted-foreground tracking-wide uppercase">Tags</label>
 
                       {/* Current tags */}
-                      <div className="flex flex-wrap gap-1.5 min-h-[28px]">
+                      <div className="flex flex-wrap gap-1.5 min-h-[32px] p-2 rounded-md bg-muted/20 border border-border/30">
                         {editTags.map((tag) => {
                           const tagColor = getTagColor(tag)
                           return (
@@ -1579,7 +1614,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                           )
                         })}
                         {editTags.length === 0 && (
-                          <span className="text-xs text-muted-foreground/50 italic">No tags</span>
+                          <span className="text-xs text-muted-foreground/50 italic px-1">No tags</span>
                         )}
                       </div>
 
@@ -1590,34 +1625,39 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                           onChange={(e) => setNewTag(e.target.value)}
                           placeholder="Type to add or create..."
                           onKeyPress={(e) => e.key === 'Enter' && addTag()}
-                          className="h-8 text-xs flex-1"
+                          className="h-9 text-xs flex-1"
                         />
-                        <Button type="button" variant="outline" size="sm" onClick={addTag} disabled={!newTag.trim()} className="h-8 px-2">
+                        <Button type="button" variant="outline" size="sm" onClick={addTag} disabled={!newTag.trim()} className="h-9 px-3">
                           <Plus className="w-3.5 h-3.5" />
                         </Button>
                       </div>
 
                       {/* Quick-add existing tags */}
-                      <div className="flex flex-wrap gap-1">
-                        {tags.filter(tag => !editTags.includes(tag.name)).slice(0, 8).map((tag) => (
-                          <button
-                            key={tag.id}
-                            type="button"
-                            className="h-6 px-2 text-[11px] rounded-md transition-colors hover:opacity-80"
-                            style={{ backgroundColor: `${tag.color}15`, color: tag.color }}
-                            onClick={() => {
-                              setEditTags([...editTags, tag.name])
-                              setNewTag("")
-                            }}
-                          >
-                            + {tag.name}
-                          </button>
-                        ))}
-                      </div>
+                      {tags.filter(tag => !editTags.includes(tag.name)).length > 0 && (
+                        <div className="space-y-1.5">
+                          <span className="text-[10px] font-medium text-muted-foreground/70 tracking-wide uppercase">Quick add</span>
+                          <div className="flex flex-wrap gap-1.5">
+                            {tags.filter(tag => !editTags.includes(tag.name)).slice(0, 8).map((tag) => (
+                              <button
+                                key={tag.id}
+                                type="button"
+                                className="h-6 px-2 text-[11px] rounded-md transition-colors hover:opacity-80"
+                                style={{ backgroundColor: `${tag.color}15`, color: tag.color }}
+                                onClick={() => {
+                                  setEditTags([...editTags, tag.name])
+                                  setNewTag("")
+                                }}
+                              >
+                                + {tag.name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       {/* Create new tag inline */}
                       {newTag.trim() && !tags.some(t => t.name.toLowerCase() === newTag.trim().toLowerCase()) && (
-                        <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/30 border border-border/30">
+                        <div className="flex items-center gap-2 p-2.5 rounded-lg bg-muted/30 border border-border/30">
                           <div className="flex gap-0.5">
                             {colorPresets.map((color) => (
                               <button
@@ -1654,7 +1694,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                   </div>
 
                   {/* Save bar */}
-                  <div className="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-border/20">
+                  <div className="flex items-center justify-end gap-2 mt-7 pt-4 border-t border-border/20">
                     <Button variant="ghost" size="sm" onClick={() => setIsEditingProject(false)}>
                       Cancel
                     </Button>
@@ -1677,7 +1717,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                   Audio
                   <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-1">{versions.length + (project.audioPreviewPath ? 1 : 0)}</Badge>
                 </TabsTrigger>
-                {project.dawType?.toLowerCase().includes("fl studio") && project.dawProjectPath && (
+                {(project.dawType?.toLowerCase().includes("fl studio") || project.dawType?.toLowerCase().includes("waveform")) && project.dawProjectPath && (
                   <TabsTrigger value="analysis" className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary gap-1.5 text-xs px-3">
                     <BarChart3 className="w-3.5 h-3.5" />
                     Analysis
@@ -1710,6 +1750,17 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                     <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-1">{distributionLinks.length}</Badge>
                   )}
                 </TabsTrigger>
+                {experimentalCanvasBoards && (
+                  <TabsTrigger value="canvas" className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary gap-1.5 text-xs px-3">
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="18" height="18" rx="2"/>
+                      <path d="M9 9h.01M15 9h.01M9 15h6"/>
+                      <circle cx="9" cy="9" r="1" fill="currentColor"/>
+                      <circle cx="15" cy="9" r="1" fill="currentColor"/>
+                    </svg>
+                    Canvas
+                  </TabsTrigger>
+                )}
               </TabsList>
             </div>
 
@@ -2182,7 +2233,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
             </TabsContent>
 
             {/* Analysis Tab */}
-            {project.dawType?.toLowerCase().includes("fl studio") && project.dawProjectPath && (
+            {(project.dawType?.toLowerCase().includes("fl studio") || project.dawType?.toLowerCase().includes("waveform")) && project.dawProjectPath && (
               <TabsContent value="analysis" className="flex-1 overflow-hidden mt-0">
                 <ScrollArea className="h-full">
                   <div className="p-6">
@@ -2470,6 +2521,29 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                 </div>
               </ScrollArea>
             </TabsContent>
+
+            {/* Canvas Tab */}
+            {experimentalCanvasBoards && (
+              <TabsContent value="canvas" className="flex-1 overflow-hidden mt-0">
+                {/* Wrapper repositions without remounting tldraw */}
+                <div className={
+                  canvasMode === "fullscreen" ? "fixed inset-0 z-[9999] bg-[#0a0a0a]" :
+                  canvasMode === "expanded"   ? "absolute inset-0 z-50 bg-[#0a0a0a]" :
+                  "h-full"
+                }>
+                  <ProjectCanvas
+                    projectId={project.id}
+                    project={project}
+                    tasks={projectTasks}
+                    versions={versions}
+                    annotations={annotations}
+                    distributionLinks={distributionLinks}
+                    mode={canvasMode}
+                    onSetMode={setCanvasMode}
+                  />
+                </div>
+              </TabsContent>
+            )}
           </Tabs>
         </div>
       </TooltipProvider>

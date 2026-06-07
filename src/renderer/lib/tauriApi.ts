@@ -229,6 +229,13 @@ export const getCachedPeaks = (
 ): Promise<number[] | null> =>
   invoke("get_cached_peaks", { filePath, numPeaks });
 
+export const cacheAudioPeaks = (
+  filePath: string,
+  peaks: number[],
+  numPeaks: number = 200
+): Promise<void> =>
+  invoke("cache_audio_peaks", { filePath, numPeaks, peaks });
+
 // ============ Scanning ============
 export const scanFLStudioFolder = (
   folderPath: string
@@ -239,6 +246,12 @@ export const scanAbletonFolder = (
   folderPath: string
 ): Promise<{ count: number }> =>
   invoke("scan_ableton_folder", { folderPath });
+
+/** Scan for Waveform / Tracktion (.tracktionedit) projects with metadata extraction. */
+export const scanWaveformFolder = (
+  folderPath: string
+): Promise<{ count: number }> =>
+  invoke("scan_waveform_folder", { folderPath });
 
 /** Generic scan for any DAW (Logic Pro, Pro Tools, Cubase, Studio One, etc.) */
 export const scanDAWFolder = (
@@ -442,6 +455,22 @@ export const clearFlpAnalysisCache = (
 ): Promise<boolean> =>
   invoke("clear_flp_analysis_cache", { projectId });
 
+// ============ Tracktion / Waveform Analysis ============
+/**
+ * Deep analysis for a .tracktionedit file. Returns data in the FlpAnalysis shape
+ * (plugins/channels/mixerTracks/patterns) so the ProjectAnalysis UI can render it.
+ */
+export const analyzeTracktionProject = (
+  projectId: string,
+  filePath: string
+): Promise<FlpAnalysis> =>
+  invoke("analyze_tracktion_project", { projectId, filePath });
+
+export const extractTracktionMetadata = (
+  filePath: string
+): Promise<Record<string, unknown>> =>
+  invoke("extract_tracktion_metadata", { filePath });
+
 // ============ User Profile ============
 export const getUserProfile = (): Promise<UserProfile> =>
   invoke("get_user_profile");
@@ -528,6 +557,34 @@ export const getSettings = (): Promise<AppSettings> =>
 export const setSettings = (
   settings: Partial<AppSettings>
 ): Promise<boolean> => invoke("set_settings", { settings });
+
+// ============ Canvas Data ============
+export const getCanvasData = (projectId: string): Promise<string | null> =>
+  invoke("get_canvas_data", { projectId });
+
+export const saveCanvasData = (projectId: string, snapshot: string): Promise<boolean> =>
+  invoke("save_canvas_data", { projectId, snapshot });
+
+// ============ Shared Project Local Cache ============
+export const downloadSharedFile = (
+  shareId: string,
+  projectTitle: string,
+  fileName: string,
+  url: string,
+): Promise<string> =>
+  invoke("download_shared_file", { shareId, projectTitle, fileName, url });
+
+export const getSharedFilePath = (
+  shareId: string,
+  projectTitle: string,
+  fileName: string,
+): Promise<string | null> =>
+  invoke("get_shared_file_path", { shareId, projectTitle, fileName });
+
+export const revealInFolder = (
+  filePath: string,
+): Promise<{ success: boolean; error?: string }> =>
+  invoke("reveal_in_folder", { filePath });
 
 // ============ Database ============
 export const clearAllProjects = (): Promise<number> =>
@@ -625,10 +682,12 @@ export const electronCompat = {
   loadAudioFile,
   computeAudioPeaks,
   getCachedPeaks,
+  cacheAudioPeaks,
 
   // Scanning
   scanFLStudioFolder,
   scanAbletonFolder,
+  scanWaveformFolder,
   scanDAWFolder,
   updateFileModDates,
   updateDawTypes,
@@ -678,6 +737,10 @@ export const electronCompat = {
   getAllFlpAnalysesCached,
   clearFlpAnalysisCache,
 
+  // Tracktion / Waveform Analysis
+  analyzeTracktionProject,
+  extractTracktionMetadata,
+
   // User Profile
   getUserProfile,
   updateUserProfile,
@@ -704,6 +767,15 @@ export const electronCompat = {
 
   // Screenshot
   captureWindowScreenshot,
+
+  // Canvas
+  getCanvasData,
+  saveCanvasData,
+
+  // Shared project local cache
+  downloadSharedFile,
+  getSharedFilePath,
+  revealInFolder,
 
   // Settings
   getSettings,

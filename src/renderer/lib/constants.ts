@@ -24,4 +24,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifyOnStatusChange: true,
   confirmDestructiveActions: true,
   language: "en",
+  hasSeenTour: false,
+  featureRequests: [],
+  permanentCollaborators: [],
+  boardHiddenStatuses: [],
+  experimentalCanvasBoards: false,
 }

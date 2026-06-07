@@ -31,6 +31,7 @@ pub struct Project {
     pub share_count: i64,
     #[serde(default)]
     pub plugin_linked: bool,
+    pub rating: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -244,6 +245,8 @@ impl Database {
             "ALTER TABLE audio_versions ADD COLUMN analysis_path TEXT",
             // Plugin bridge persistent link flag
             "ALTER TABLE projects ADD COLUMN plugin_linked INTEGER DEFAULT 0",
+            // Star rating (0-5, NULL = unrated)
+            "ALTER TABLE projects ADD COLUMN rating INTEGER DEFAULT NULL",
         ];
 
         for migration in migrations {
@@ -312,6 +315,16 @@ impl Database {
                 plugin_id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
                 linked_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );"
+        );
+
+        // Canvas data (tldraw snapshots per project)
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS canvas_data (
+                project_id TEXT PRIMARY KEY,
+                snapshot TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             );"
         );
 
@@ -521,6 +534,15 @@ impl Database {
             }));
         }
 
+        if let Some(rating_val) = updates.get("rating") {
+            set_clauses.push("rating = ?".to_string());
+            if rating_val.is_null() {
+                values.push(Box::new(Option::<i64>::None));
+            } else {
+                values.push(Box::new(rating_val.as_i64().unwrap_or(0)));
+            }
+        }
+
         set_clauses.push("updated_at = ?".to_string());
         if let Some(ua) = updates.get("updatedAt").and_then(|v| v.as_str()) {
             values.push(Box::new(ua.to_string()));
@@ -597,6 +619,7 @@ impl Database {
             sort_order: row.get("sort_order").unwrap_or(0),
             share_count: row.get("share_count").unwrap_or(0),
             plugin_linked: row.get::<_, i64>("plugin_linked").unwrap_or(0) != 0,
+            rating: row.get("rating").ok(),
         }
     }
 
@@ -1778,6 +1801,34 @@ impl Database {
             .execute("DELETE FROM project_distribution_links WHERE id = ?", params![id])
             .map_err(|e| e.to_string())?;
         Ok(count > 0)
+    }
+
+    // ---- Canvas Data ----
+
+    pub fn get_canvas_data(&self, project_id: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT snapshot FROM canvas_data WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(snapshot) => Ok(Some(snapshot)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    pub fn save_canvas_data(&self, project_id: &str, snapshot: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO canvas_data (project_id, snapshot, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(project_id) DO UPDATE SET snapshot = ?2, updated_at = ?3",
+            params![project_id, snapshot, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     // ---- Plugin instance → project persistent links ----

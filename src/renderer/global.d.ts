@@ -66,6 +66,7 @@ declare global {
       loadAudioFile: (filePath: string) => Promise<ArrayBuffer>;
       computeAudioPeaks: (filePath: string, numPeaks?: number) => Promise<number[]>;
       getCachedPeaks: (filePath: string, numPeaks?: number) => Promise<number[] | null>;
+      cacheAudioPeaks: (filePath: string, peaks: number[], numPeaks?: number) => Promise<void>;
       openInDaw: (filePath: string) => Promise<{ success: boolean; error?: string }>;
       openFolder: (folderPath: string) => Promise<{ success: boolean; error?: string }>;
 
@@ -73,6 +74,8 @@ declare global {
       scanFLStudioFolder: (folderPath: string) => Promise<{ count: number }>;
       // Ableton scanning
       scanAbletonFolder: (folderPath: string) => Promise<{ count: number }>;
+      // Waveform / Tracktion scanning
+      scanWaveformFolder: (folderPath: string) => Promise<{ count: number }>;
       // Generic DAW scanning (Logic Pro, Pro Tools, Cubase, Studio One, Bitwig, Reaper, etc.)
       scanDAWFolder: (folderPath: string, dawName: string) => Promise<{ count: number }>;
       updateFileModDates: () => Promise<{ count: number }>;
@@ -81,7 +84,7 @@ declare global {
       // AI artwork generation
       generateArtwork: (projectId: string, projectTitle: string) => Promise<string | null>;
 
-      // Unsplash random photo
+      // Random photo (picsum)
       fetchUnsplashPhoto: (projectId: string) => Promise<string | null>;
 
       // Batch photo operations
@@ -131,6 +134,9 @@ declare global {
       // FLP Analysis
       analyzeFlpProject: (projectId: string, flpPath: string) => Promise<FlpAnalysis>;
       clearFlpAnalysisCache: (projectId: string) => Promise<void>;
+      // Tracktion / Waveform Analysis (returns FlpAnalysis-shaped data)
+      analyzeTracktionProject: (projectId: string, filePath: string) => Promise<FlpAnalysis>;
+      extractTracktionMetadata: (filePath: string) => Promise<Record<string, unknown>>;
       captureWindowScreenshot: (windowTitle: string) => Promise<string>;
 
       // User Profile
@@ -150,6 +156,15 @@ declare global {
       // Onboarding
       getOnboardingState: () => Promise<OnboardingState | null>;
       updateOnboardingState: (state: Partial<OnboardingState>) => Promise<void>;
+
+      // Canvas
+      getCanvasData: (projectId: string) => Promise<string | null>;
+      saveCanvasData: (projectId: string, snapshot: string) => Promise<boolean>;
+
+      // Shared project local cache
+      downloadSharedFile: (shareId: string, projectTitle: string, fileName: string, url: string) => Promise<string>;
+      getSharedFilePath: (shareId: string, projectTitle: string, fileName: string) => Promise<string | null>;
+      revealInFolder: (filePath: string) => Promise<{ success: boolean; error?: string }>;
 
       // Annotation ↔ Task conversion
       convertAnnotationToTask: (annotationId: string) => Promise<void>;

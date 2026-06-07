@@ -23,6 +23,7 @@ interface VirtualizedProjectListProps {
   unsplashEnabled?: boolean;
   aiArtworkEnabled?: boolean;
   onOpenArtworkManager?: (project: Project) => void;
+  onRateProject?: (project: Project, rating: number) => void;
 }
 
 const ITEM_SIZES = {
@@ -66,6 +67,7 @@ const RowComponent = ({ index, style, ...props }: any) => {
         unsplashEnabled={props.unsplashEnabled}
         aiArtworkEnabled={props.aiArtworkEnabled}
         onOpenArtworkManager={props.onOpenArtworkManager}
+        onRateProject={props.onRateProject}
       />
     </div>
   );
@@ -103,6 +105,7 @@ const CellComponent = ({ columnIndex, rowIndex, style, ...props }: any) => {
         unsplashEnabled={restProps.unsplashEnabled}
         aiArtworkEnabled={restProps.aiArtworkEnabled}
         onOpenArtworkManager={restProps.onOpenArtworkManager}
+        onRateProject={restProps.onRateProject}
       />
     </div>
   );
@@ -128,6 +131,7 @@ export const VirtualizedProjectList: React.FC<VirtualizedProjectListProps> = ({
   unsplashEnabled,
   aiArtworkEnabled,
   onOpenArtworkManager,
+  onRateProject,
 }) => {
   const commonProps = {
     projects,
@@ -150,6 +154,7 @@ export const VirtualizedProjectList: React.FC<VirtualizedProjectListProps> = ({
     unsplashEnabled,
     aiArtworkEnabled,
     onOpenArtworkManager,
+    onRateProject,
   };
 
   // Calculate available height considering window dimensions and UI elements

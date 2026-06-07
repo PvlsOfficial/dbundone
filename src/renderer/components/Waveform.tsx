@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
+import { computePeaksViaWebAudio } from '@/lib/audioPeaks'
 
 interface WaveformProps {
   audioUrl: string
@@ -74,8 +75,25 @@ export const Waveform: React.FC<WaveformProps> = ({
         setError(null)
         setPeaks([])
 
-        const computed = await window.electron?.computeAudioPeaks(audioUrl, NUM_WAVEFORM_PEAKS)
+        let computed: number[] | null | undefined
+        try {
+          computed = await window.electron?.computeAudioPeaks(audioUrl, NUM_WAVEFORM_PEAKS)
+        } catch (err) {
+          // Rust decode failed (e.g. unsupported codec) — fall through to fallback
+          console.warn('Rust waveform compute failed, trying browser decoder:', err)
+          computed = null
+        }
         if (thisRequest !== requestIdRef.current) return
+
+        // 4. Fallback: symphonia can't decode some formats the WebView can play
+        // (notably Opus-in-Ogg). Decode in the browser and persist for next time.
+        if (!computed || computed.length === 0) {
+          computed = await computePeaksViaWebAudio(audioUrl, NUM_WAVEFORM_PEAKS)
+          if (thisRequest !== requestIdRef.current) return
+          if (computed && computed.length > 0) {
+            void window.electron?.cacheAudioPeaks?.(audioUrl, computed, NUM_WAVEFORM_PEAKS)
+          }
+        }
 
         if (computed && computed.length > 0) {
           peaksCache.set(audioUrl, computed)

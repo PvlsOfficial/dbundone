@@ -1,12 +1,12 @@
 import React from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Music, FolderOpen, Layers, Settings, Sparkles, FolderSync, BarChart3, HelpCircle, Share2 } from "lucide-react"
+import { Music, FolderOpen, Layers, Settings, Sparkles, FolderSync, BarChart3, HelpCircle, Share2, LayoutDashboard } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui"
 import { Separator } from "@/components/ui"
 import { useI18n, type TranslationKey } from "@/i18n"
 
-type NavPage = "dashboard" | "groups" | "scheduler" | "settings" | "statistics" | "help" | "shared"
+type NavPage = "dashboard" | "groups" | "scheduler" | "settings" | "statistics" | "help" | "shared" | "board"
 type Page = NavPage | "project-detail" | "group-detail"
 
 interface NavigationProps {
@@ -22,6 +22,7 @@ interface NavigationProps {
     isScanning: boolean;
     phase?: string;
   } | null
+  experimentalCanvasBoards?: boolean
 }
 
 const navItems: { id: NavPage; labelKey: TranslationKey; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -50,6 +51,11 @@ const navItems: { id: NavPage; labelKey: TranslationKey; icon: React.ComponentTy
     labelKey: "nav.shared",
     icon: Share2,
   },
+  {
+    id: "board",
+    labelKey: "nav.board",
+    icon: LayoutDashboard,
+  },
 ]
 
 export const Navigation: React.FC<NavigationProps> = ({
@@ -58,8 +64,12 @@ export const Navigation: React.FC<NavigationProps> = ({
   onScanFolder,
   onScanFolderWithSelection,
   scanProgress,
+  experimentalCanvasBoards = false,
 }) => {
   const { t } = useI18n()
+  const visibleNavItems = experimentalCanvasBoards
+    ? navItems
+    : navItems.filter((item) => item.id !== "board")
 
   function getPhaseLabel(phase?: string): string {
     switch (phase) {
@@ -77,7 +87,7 @@ export const Navigation: React.FC<NavigationProps> = ({
     <nav className="w-[72px] h-full flex flex-col items-center py-4 bg-card border-r border-border/30 z-50 relative">
         {/* Main Navigation */}
         <div className="flex flex-col items-center gap-1 flex-1">
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const isActive = currentPage === item.id || (item.id === "groups" && currentPage === "group-detail")
             const Icon = item.icon
             const label = t(item.labelKey)

@@ -25,6 +25,7 @@ export interface Project {
   sortOrder: number
   shareCount?: number
   pluginLinked?: boolean
+  rating?: number | null
 }
 
 // Audio version source types
@@ -207,7 +208,7 @@ export interface PluginEvent {
 
 export interface FilterOptions {
   searchQuery: string
-  sortBy: "name-asc" | "name-desc" | "date-newest" | "date-oldest" | "bpm-asc" | "bpm-desc" | "time-spent-asc" | "time-spent-desc" | "key" | "tags-asc" | "tags-desc"
+  sortBy: "name-asc" | "name-desc" | "date-newest" | "date-oldest" | "bpm-asc" | "bpm-desc" | "time-spent-asc" | "time-spent-desc" | "key" | "tags-asc" | "tags-desc" | "rating-desc" | "rating-asc"
   selectedTags: string[]
   collectionFilter: string | null
   statusFilter: ProjectStatus[] | null
@@ -216,6 +217,8 @@ export interface FilterOptions {
   artistFilter: string[] | null
   /** Filter by recording/version source type: "has-recordings", "has-renders", "has-manual" */
   recordingFilter: string[] | null
+  /** Minimum star rating filter (1–5), null = no filter */
+  ratingFilter: number | null
 }
 
 export interface AudioPlayerState {
@@ -242,7 +245,7 @@ export interface AppSettings {
   unsplashEnabled: boolean
   sampleFolders: string[]
   autoScanOnStartup: boolean
-  defaultSort: "date-newest" | "date-oldest" | "name-asc" | "name-desc" | "bpm-asc" | "bpm-desc" | "time-spent-asc" | "time-spent-desc" | "key" | "tags-asc" | "tags-desc"
+  defaultSort: "date-newest" | "date-oldest" | "name-asc" | "name-desc" | "bpm-asc" | "bpm-desc" | "time-spent-asc" | "time-spent-desc" | "key" | "tags-asc" | "tags-desc" | "rating-desc" | "rating-asc"
   notificationsEnabled: boolean
   notifyOnShare: boolean
   notifyOnAnnotation: boolean
@@ -250,7 +253,13 @@ export interface AppSettings {
   confirmDestructiveActions: boolean
   language: "en" | "de" | "es" | "fr" | "ja" | "pt" | "ro"
   hasSeenTour: boolean
-  featureRequests: { id: string; text: string; votes: number; createdAt: string }[]
+  featureRequests: { id: string; title: string; description?: string; category?: string; votes: number; createdAt: string }[]
+  /** Users that are auto-shared on every new project share (permanent collaborators) */
+  permanentCollaborators: { id: string; email: string; displayName: string | null }[]
+  /** Project status keys hidden from the global Board canvas */
+  boardHiddenStatuses: string[]
+  /** Enable experimental canvas boards (global Board page + per-project Canvas tab). WIP, off by default. */
+  experimentalCanvasBoards: boolean
 }
 
 // Supported DAWs
@@ -267,6 +276,7 @@ export const SUPPORTED_DAWS = [
   "GarageBand",
   "LMMS",
   "Cakewalk",
+  "Waveform",
 ] as const
 
 /** File extensions for each DAW (used for display & detection) */
@@ -283,6 +293,7 @@ export const DAW_EXTENSIONS: Record<string, string[]> = {
   "GarageBand": [".band"],
   "LMMS": [".mmp", ".mmpz"],
   "Cakewalk": [".cwp"],
+  "Waveform": [".tracktionedit"],
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -310,6 +321,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   language: "en",
   hasSeenTour: false,
   featureRequests: [],
+  permanentCollaborators: [],
+  boardHiddenStatuses: [],
+  experimentalCanvasBoards: false,
 }
 
 // ── FLP Analysis Types ──────────────────────────────────────────────────────

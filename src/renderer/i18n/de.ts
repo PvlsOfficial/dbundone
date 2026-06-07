@@ -148,6 +148,7 @@ export default {
   "settings.daw.desc.GarageBand": "GarageBand Projekte (.band) — nur macOS",
   "settings.daw.desc.LMMS": "LMMS Projekte (.mmp, .mmpz)",
   "settings.daw.desc.Cakewalk": "Cakewalk / SONAR Projekte (.cwp)",
+  "settings.daw.desc.Waveform": "Tracktion Waveform Projekte (.tracktionedit) — vollständige Metadaten- & Plugin-Extraktion",
 
   "settings.ai.title": "KI-Artwork-Generierung",
   "settings.ai.autoGenerate": "Artwork automatisch generieren",

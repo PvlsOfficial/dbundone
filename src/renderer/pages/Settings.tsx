@@ -422,6 +422,29 @@ export const Settings: React.FC<SettingsProps> = ({ onClose, onDatabaseCleared, 
                     }
                   />
                 </div>
+
+                <Separator />
+
+                {/* Experimental: Canvas Boards (WIP) */}
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <Label>Canvas boards</Label>
+                      <span className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-500 border border-amber-500/30">
+                        WIP
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Enable the experimental global Board page and per-project Canvas tab. These features are unfinished and may be unstable.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings.experimentalCanvasBoards}
+                    onCheckedChange={(checked) =>
+                      setSettings((prev) => ({ ...prev, experimentalCanvasBoards: checked }))
+                    }
+                  />
+                </div>
               </div>
             </motion.section>
           )}

@@ -188,7 +188,7 @@ export const SharedWithMe: React.FC = () => {
       )}
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0 overflow-hidden">
         <div className="px-6 pt-4">
           <TabsList className="w-full max-w-xs">
             <TabsTrigger value="received" className="flex-1 gap-1.5">
@@ -207,7 +207,7 @@ export const SharedWithMe: React.FC = () => {
           </TabsList>
         </div>
 
-        <ScrollArea className="flex-1">
+        <ScrollArea className="flex-1 min-h-0">
           <TabsContent value="received" className="p-6 pt-4">
             {isLoading ? (
               <div className="flex items-center justify-center py-16 gap-2 text-muted-foreground">

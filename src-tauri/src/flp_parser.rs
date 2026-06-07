@@ -949,8 +949,6 @@ pub fn analyze_flp_from_bytes(data: &[u8], label: &str) -> Result<FlpAnalysis, S
                             plugins: current_mixer_plugins.drain(..).collect(),
                         });
                     } else {
-                        current_mixer_name = None;
-                        current_mixer_color = None;
                         current_mixer_plugins.clear();
                     }
                 }

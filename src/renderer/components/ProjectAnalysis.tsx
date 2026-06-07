@@ -75,6 +75,8 @@ export const ProjectAnalysis: React.FC<ProjectAnalysisProps> = ({
   const [searchQuery, setSearchQuery] = useState("")
   const [expandedChannels, setExpandedChannels] = useState<Set<number>>(new Set())
 
+  const isTracktion = project.dawProjectPath?.endsWith(".tracktionedit")
+
   const loadAnalysis = useCallback(async (forceRefresh = false) => {
     if (!isElectron() || !project.dawProjectPath) return
 
@@ -84,7 +86,9 @@ export const ProjectAnalysis: React.FC<ProjectAnalysisProps> = ({
       if (forceRefresh) {
         await window.electron?.clearFlpAnalysisCache?.(project.id)
       }
-      const result = await window.electron?.analyzeFlpProject?.(project.id, project.dawProjectPath)
+      const result = project.dawProjectPath.endsWith(".tracktionedit")
+        ? await window.electron?.analyzeTracktionProject?.(project.id, project.dawProjectPath)
+        : await window.electron?.analyzeFlpProject?.(project.id, project.dawProjectPath)
       if (result) {
         setAnalysis(result)
       }
@@ -95,8 +99,11 @@ export const ProjectAnalysis: React.FC<ProjectAnalysisProps> = ({
     }
   }, [project.id, project.dawProjectPath])
 
+  const isFlpOrZip = project.dawProjectPath?.endsWith(".flp") || project.dawProjectPath?.endsWith(".zip")
+  const canAnalyze = isFlpOrZip || isTracktion
+
   useEffect(() => {
-    if (project.dawProjectPath?.endsWith(".flp")) {
+    if (canAnalyze) {
       loadAnalysis()
     }
   }, [project.dawProjectPath, loadAnalysis])
@@ -120,11 +127,11 @@ export const ProjectAnalysis: React.FC<ProjectAnalysisProps> = ({
     })
   }
 
-  if (!project.dawProjectPath?.endsWith(".flp")) {
+  if (!canAnalyze) {
     return (
       <div className="flex items-center justify-center py-12 text-muted-foreground">
         <Puzzle className="w-5 h-5 mr-2 opacity-50" />
-        <span>Project analysis is available for FL Studio (.flp) projects</span>
+        <span>Project analysis is available for FL Studio (.flp) and Waveform (.tracktionedit) projects</span>
       </div>
     )
   }
@@ -164,10 +171,10 @@ export const ProjectAnalysis: React.FC<ProjectAnalysisProps> = ({
 
   const tabs: { id: AnalysisTab; label: string; icon: React.ReactNode; count: number }[] = [
     { id: "plugins", label: "Plugins", icon: <Plug className="w-4 h-4" />, count: plugins.length },
-    { id: "channels", label: "Channels", icon: <SlidersHorizontal className="w-4 h-4" />, count: channels.length },
+    { id: "channels", label: isTracktion ? "Tracks" : "Channels", icon: <SlidersHorizontal className="w-4 h-4" />, count: channels.length },
     { id: "mixer", label: "Mixer", icon: <Headphones className="w-4 h-4" />, count: mixerTracks.length || channelsWithMixerRouting },
     { id: "samples", label: "Samples", icon: <FileAudio className="w-4 h-4" />, count: samples.length },
-    { id: "patterns", label: "Patterns", icon: <Grid3X3 className="w-4 h-4" />, count: patterns.length },
+    { id: "patterns", label: isTracktion ? "Clips" : "Patterns", icon: <Grid3X3 className="w-4 h-4" />, count: patterns.length },
   ]
 
   const filteredPlugins = plugins.filter(p =>
@@ -193,7 +200,7 @@ export const ProjectAnalysis: React.FC<ProjectAnalysisProps> = ({
           Project Analysis
           {analysis.flVersion && (
             <Badge variant="secondary" className="text-xs">
-              FL Studio {analysis.flVersion}
+              {isTracktion ? analysis.flVersion : `FL Studio ${analysis.flVersion}`}
             </Badge>
           )}
         </h2>

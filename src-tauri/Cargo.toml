@@ -36,15 +36,21 @@ dirs = "5"
 symphonia = { version = "0.5", features = ["all"] }
 open = "5"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+quick-xml = "0.38"
 tokio-tungstenite = "0.21"
 futures-util = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
 
+# NOTE: `panic = "abort"` is intentionally NOT set here. With abort, any panic
+# inside a worker thread (e.g. the symphonia audio decoder choking on a malformed
+# .ogg/Vorbis file) takes down the entire app instead of being caught at the
+# `spawn_blocking` boundary. Unwinding lets those panics surface as recoverable
+# errors so the UI just falls back to "no waveform".
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
-panic = "abort"
 strip = true

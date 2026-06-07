@@ -1,5 +1,6 @@
 use crate::database::Database;
 use crate::scanner;
+use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -64,6 +65,10 @@ pub struct AppSettings {
     pub has_seen_tour: bool,
     #[serde(rename = "featureRequests", default)]
     pub feature_requests: serde_json::Value,
+    #[serde(rename = "permanentCollaborators", default)]
+    pub permanent_collaborators: serde_json::Value,
+    #[serde(rename = "boardHiddenStatuses", default)]
+    pub board_hidden_statuses: Vec<String>,
 }
 
 fn default_true() -> bool { true }
@@ -97,6 +102,8 @@ impl Default for AppSettings {
             language: "en".to_string(),
             has_seen_tour: false,
             feature_requests: serde_json::json!([]),
+            permanent_collaborators: serde_json::json!([]),
+            board_hidden_statuses: vec![],
         }
     }
 }
@@ -457,6 +464,7 @@ pub fn detect_projects(folder_path: String) -> Result<Value, String> {
         ("GarageBand", &["band"]),
         ("LMMS", &["mmp", "mmpz"]),
         ("Cakewalk", &["cwp"]),
+        ("Waveform", &["tracktionedit"]),
     ];
 
     // Package extensions (directories that count as projects)
@@ -850,6 +858,24 @@ pub fn get_cached_peaks(
     Ok(read_cached_peaks(&app_data_dir.0, &file_path, num_peaks))
 }
 
+/// Persist peaks computed outside Rust — e.g. by the WebView's audio decoder for
+/// formats symphonia can't handle (Opus-in-Ogg). Lets subsequent loads hit the
+/// disk cache instead of re-decoding the whole file in JS on every app start.
+#[tauri::command]
+pub fn cache_audio_peaks(
+    app_data_dir: State<'_, AppDataDir>,
+    file_path: String,
+    num_peaks: usize,
+    peaks: Vec<f32>,
+) -> Result<(), String> {
+    let num_peaks = if num_peaks == 0 { 200 } else { num_peaks };
+    // Only persist when the length matches the cache key, otherwise reads reject it.
+    if peaks.len() == num_peaks {
+        write_cached_peaks(&app_data_dir.0, &file_path, num_peaks, &peaks);
+    }
+    Ok(())
+}
+
 /// Compute waveform peaks with persistent disk caching and streaming decode.
 /// Returns normalized peak amplitudes (0.0–1.0).
 #[tauri::command]
@@ -867,9 +893,18 @@ pub async fn compute_audio_peaks(
         return Ok(cached);
     }
 
-    // Compute on a blocking thread so we don't tie up the async runtime
+    // Compute on a blocking thread so we don't tie up the async runtime.
+    // The symphonia decoder can panic on malformed/unsupported streams (notably
+    // some .ogg/Vorbis files), so we isolate the decode behind catch_unwind and
+    // turn any panic into an ordinary Err — the UI then just skips the waveform
+    // instead of the whole app going down.
     let peaks = tokio::task::spawn_blocking(move || {
-        compute_peaks_streaming(&file_path_clone, num_peaks)
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            compute_peaks_streaming(&file_path_clone, num_peaks)
+        }))
+        .unwrap_or_else(|_| {
+            Err(format!("Audio decoder panicked while reading: {}", file_path_clone))
+        })
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))??;
@@ -1357,6 +1392,16 @@ pub async fn scan_ableton_folder(
         als_files_all
     };
 
+    let total = als_files.len();
+
+    // Phase 1: extract metadata (tempo, track counts, ...) via the native ALS parser.
+    app.emit("scan-progress", serde_json::json!({
+        "current": 0, "total": total, "daw": "Ableton Live",
+        "file": format!("Reading metadata from {} ALS files...", total),
+        "isScanning": true, "phase": "extracting_metadata"
+    })).ok();
+    let als_metadata_map = crate::als_parser::parse_als_batch_parallel(&als_files);
+
     let database = db.0.lock().map_err(|e| e.to_string())?;
     let existing_projects = database.get_projects()?;
     let mut existing_map = std::collections::HashMap::new();
@@ -1367,7 +1412,6 @@ pub async fn scan_ableton_folder(
     }
 
     let mut added_count = 0i64;
-    let total = als_files.len();
 
     for (i, als_path) in als_files.iter().enumerate() {
         app.emit("scan-progress", serde_json::json!({
@@ -1390,6 +1434,11 @@ pub async fn scan_ableton_folder(
             chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339()
         });
 
+        let metadata = als_metadata_map.get(als_path);
+        let bpm_from_meta = metadata
+            .and_then(|m| m.get("bpm"))
+            .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)));
+
         if let Some(existing) = existing_map.get(als_path) {
             let mut updates = serde_json::Map::new();
             if let Some(ref fm) = file_modified {
@@ -1398,6 +1447,11 @@ pub async fn scan_ableton_folder(
             }
             if let Some(ref fc) = file_created {
                 updates.insert("createdAt".to_string(), serde_json::json!(fc));
+            }
+            if let Some(bpm) = bpm_from_meta {
+                if bpm != existing.bpm {
+                    updates.insert("bpm".to_string(), serde_json::json!(bpm));
+                }
             }
             if !updates.is_empty() {
                 let _ = database.update_project(&existing.id, &Value::Object(updates));
@@ -1416,7 +1470,7 @@ pub async fn scan_ableton_folder(
                 "audioPreviewPath": null,
                 "dawProjectPath": als_path,
                 "dawType": "Ableton Live",
-                "bpm": 0,
+                "bpm": bpm_from_meta.unwrap_or(0),
                 "musicalKey": "None",
                 "tags": [],
                 "collectionName": collection_name,
@@ -1442,11 +1496,136 @@ pub async fn scan_ableton_folder(
     Ok(serde_json::json!({ "count": added_count }))
 }
 
+/// Scan a folder for Waveform / Tracktion (.tracktionedit) projects, extracting
+/// bpm + metadata via the native Tracktion parser (mirrors scan_ableton_folder).
+#[tauri::command]
+pub async fn scan_waveform_folder(
+    app: AppHandle,
+    db: State<'_, DbState>,
+    settings: State<'_, SettingsState>,
+    folder_path: String,
+) -> Result<Value, String> {
+    let exclude_autosaves = {
+        let s = settings.0.lock().map_err(|e| e.to_string())?;
+        s.exclude_autosaves
+    };
+
+    let files_all = scanner::scan_for_project_files(&folder_path, &["tracktionedit"], None);
+    let files = if exclude_autosaves {
+        scanner::filter_autosaves(&files_all, "tracktionedit")
+    } else {
+        files_all
+    };
+
+    let total = files.len();
+
+    app.emit("scan-progress", serde_json::json!({
+        "current": 0, "total": total, "daw": "Waveform",
+        "file": format!("Reading metadata from {} Waveform edits...", total),
+        "isScanning": true, "phase": "extracting_metadata"
+    })).ok();
+    let metadata_map = crate::tracktion_parser::parse_tracktion_batch_parallel(&files);
+
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    let existing_projects = database.get_projects()?;
+    let mut existing_map = std::collections::HashMap::new();
+    for p in &existing_projects {
+        if let Some(ref path) = p.daw_project_path {
+            existing_map.insert(path.clone(), p.clone());
+        }
+    }
+
+    let mut added_count = 0i64;
+
+    for (i, path) in files.iter().enumerate() {
+        app.emit("scan-progress", serde_json::json!({
+            "current": i + 1, "total": total, "daw": "Waveform",
+            "file": Path::new(path).file_name().unwrap_or_default().to_string_lossy(),
+            "isScanning": true, "phase": "saving_projects"
+        })).ok();
+
+        let project_name = Path::new(path)
+            .file_stem()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or("Untitled");
+
+        let file_stats = fs::metadata(path).ok();
+        let file_modified = file_stats.as_ref().and_then(|s| s.modified().ok()).map(|t| {
+            chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339()
+        });
+        let file_created = file_stats.as_ref().and_then(|s| s.created().ok()).map(|t| {
+            chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339()
+        });
+
+        let metadata = metadata_map.get(path);
+        let bpm_from_meta = metadata
+            .and_then(|m| m.get("bpm"))
+            .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)));
+
+        if let Some(existing) = existing_map.get(path) {
+            let mut updates = serde_json::Map::new();
+            if let Some(ref fm) = file_modified {
+                updates.insert("fileModifiedAt".to_string(), serde_json::json!(fm));
+                updates.insert("updatedAt".to_string(), serde_json::json!(fm));
+            }
+            if let Some(ref fc) = file_created {
+                updates.insert("createdAt".to_string(), serde_json::json!(fc));
+            }
+            if let Some(bpm) = bpm_from_meta {
+                if bpm != existing.bpm {
+                    updates.insert("bpm".to_string(), serde_json::json!(bpm));
+                }
+            }
+            if !updates.is_empty() {
+                let _ = database.update_project(&existing.id, &Value::Object(updates));
+            }
+        } else {
+            let artwork_path = scanner::find_artwork_file(path, project_name);
+            let collection_name = Path::new(path)
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("Unknown");
+
+            let project_data = serde_json::json!({
+                "title": project_name,
+                "artworkPath": artwork_path,
+                "audioPreviewPath": null,
+                "dawProjectPath": path,
+                "dawType": "Waveform",
+                "bpm": bpm_from_meta.unwrap_or(0),
+                "musicalKey": "None",
+                "tags": [],
+                "collectionName": collection_name,
+                "status": "idea",
+                "favoriteVersionId": null,
+                "archived": false,
+                "fileModifiedAt": file_modified,
+                "createdAt": file_created.as_deref().unwrap_or(&chrono::Utc::now().to_rfc3339()),
+                "updatedAt": file_modified.as_deref().unwrap_or(&chrono::Utc::now().to_rfc3339()),
+            });
+
+            let _ = database.create_project(&project_data);
+            added_count += 1;
+        }
+    }
+
+    app.emit("scan-progress", serde_json::json!({
+        "current": total, "total": total, "daw": "Waveform",
+        "file": format!("Scan complete! Added {} projects", added_count),
+        "isScanning": false, "phase": "complete"
+    })).ok();
+
+    Ok(serde_json::json!({ "count": added_count }))
+}
+
 /// Map a DAW name to its file extensions (lowercase, no dots).
 fn daw_extensions(daw_name: &str) -> Vec<&'static str> {
     match daw_name {
         "FL Studio" => vec!["flp"],
         "Ableton Live" => vec!["als"],
+        "Waveform" => vec!["tracktionedit"],
         "Logic Pro" => vec!["logicx"],
         "Pro Tools" => vec!["ptx", "pts"],
         "Cubase" => vec!["cpr"],
@@ -1879,30 +2058,27 @@ pub async fn fetch_unsplash_photo(
     let artwork_dir = app_data_dir.join("artwork");
     fs::create_dir_all(&artwork_dir).map_err(|e| e.to_string())?;
     let timestamp = chrono::Utc::now().timestamp_millis();
-    let output_path = artwork_dir.join(format!("{}_{}_unsplash.jpg", project_id, timestamp));
+    let output_path = artwork_dir.join(format!("{}_{}_picsum.jpg", project_id, timestamp));
 
-    let sources = vec![
-        format!("https://picsum.photos/800/600?random={}", chrono::Utc::now().timestamp_millis()),
-    ];
+    let client = reqwest::Client::new();
+    let url = format!("https://picsum.photos/800/600?random={}", timestamp);
 
-    for source in &sources {
-        match download_image(source).await {
-            Ok(data) if data.len() > 100 => {
-                fs::write(&output_path, &data).map_err(|e| e.to_string())?;
-                let path_str = output_path.to_string_lossy().to_string();
-                let database = db.0.lock().map_err(|e| e.to_string())?;
-                let _ = database.update_project(
-                    &project_id,
-                    &serde_json::json!({ "artworkPath": path_str }),
-                );
-                let _ = database.add_artwork_history(&project_id, &path_str, "unsplash");
-                return Ok(Some(path_str));
+    match client.get(&url).header("User-Agent", "DBundone/1.0").send().await {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(bytes) = resp.bytes().await {
+                if bytes.len() > 100 {
+                    fs::write(&output_path, &bytes).map_err(|e| e.to_string())?;
+                    let path_str = output_path.to_string_lossy().to_string();
+                    let database = db.0.lock().map_err(|e| e.to_string())?;
+                    let _ = database.update_project(&project_id, &serde_json::json!({ "artworkPath": path_str }));
+                    let _ = database.add_artwork_history(&project_id, &path_str, "unsplash");
+                    return Ok(Some(path_str));
+                }
             }
-            _ => continue,
+            Err("Downloaded image was too small or empty".to_string())
         }
+        _ => Err("Failed to download photo".to_string()),
     }
-
-    Err("Failed to fetch artwork from all sources".to_string())
 }
 
 // ============ BATCH PHOTO OPERATIONS ============
@@ -1913,14 +2089,12 @@ pub async fn batch_fetch_photos(
     db: State<'_, DbState>,
     cancel_flag: State<'_, PhotoCancelFlag>,
 ) -> Result<Value, String> {
-    // Reset cancel flag at the start
     cancel_flag.0.store(false, Ordering::SeqCst);
 
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let artwork_dir = app_data_dir.join("artwork");
     fs::create_dir_all(&artwork_dir).map_err(|e| e.to_string())?;
 
-    // Get projects without artwork
     let projects_without_artwork: Vec<(String, String)> = {
         let database = db.0.lock().map_err(|e| e.to_string())?;
         let all_projects = database.get_projects()?;
@@ -1941,74 +2115,95 @@ pub async fn batch_fetch_photos(
     let mut success_count = 0usize;
     let client = reqwest::Client::new();
 
-    for (i, (project_id, project_title)) in projects_without_artwork.iter().enumerate() {
-        // Check cancellation before each download
-        if cancel_flag.0.load(Ordering::SeqCst) {
+    app.emit("photo-progress", serde_json::json!({
+        "current": 0, "total": total, "added": 0,
+        "file": "Downloading photos...",
+        "isRunning": true, "cancelled": false
+    })).ok();
+
+    // Download in parallel chunks of 8; retry up to 3 passes for any that fail.
+    // Each attempt uses a fresh timestamp seed so picsum serves a different image.
+    const CHUNK_SIZE: usize = 20;
+    const MAX_PASSES: usize = 3;
+
+    // Tracks which project IDs still need a photo (starts as all of them).
+    let mut remaining: Vec<(String, String)> = projects_without_artwork;
+
+    for pass in 0..MAX_PASSES {
+        if remaining.is_empty() { break; }
+
+        if pass > 0 {
+            // Brief pause before retry pass so we don't hammer the server.
+            tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
             app.emit("photo-progress", serde_json::json!({
-                "current": i, "total": total, "added": success_count,
-                "file": "Stopped", "isRunning": false, "cancelled": true
+                "current": success_count, "total": total, "added": success_count,
+                "file": format!("Retrying {} remaining...", remaining.len()),
+                "isRunning": true, "cancelled": false
             })).ok();
-            return Ok(serde_json::json!({
-                "success": true, "added": success_count, "total": total, "cancelled": true
-            }));
         }
 
-        app.emit("photo-progress", serde_json::json!({
-            "current": i + 1, "total": total, "added": success_count,
-            "file": project_title, "isRunning": true, "cancelled": false
-        })).ok();
+        let mut still_failed: Vec<(String, String)> = Vec::new();
 
-        let timestamp = chrono::Utc::now().timestamp_millis();
-        let output_path = artwork_dir.join(format!("{}_{}_unsplash.jpg", project_id, timestamp));
-        let url = format!(
-            "https://picsum.photos/800/600?random={}",
-            chrono::Utc::now().timestamp_millis() as u64 + i as u64
-        );
-
-        // Try up to 3 times per image
-        let mut downloaded = false;
-        for _attempt in 0..3 {
+        for chunk in remaining.chunks(CHUNK_SIZE) {
             if cancel_flag.0.load(Ordering::SeqCst) {
-                break;
+                app.emit("photo-progress", serde_json::json!({
+                    "current": success_count, "total": total, "added": success_count,
+                    "file": "Stopped", "isRunning": false, "cancelled": true
+                })).ok();
+                return Ok(serde_json::json!({
+                    "success": true, "added": success_count, "total": total, "cancelled": true
+                }));
             }
 
-            match client
-                .get(&url)
-                .header("User-Agent", "DBundone/1.0")
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    if let Ok(bytes) = resp.bytes().await {
-                        if bytes.len() > 100 {
-                            if fs::write(&output_path, &bytes).is_ok() {
-                                let path_str = output_path.to_string_lossy().to_string();
-                                let database = db.0.lock().map_err(|e| e.to_string())?;
-                                let _ = database.update_project(
-                                    project_id,
-                                    &serde_json::json!({ "artworkPath": path_str }),
-                                );
-                                let _ = database.add_artwork_history(project_id, &path_str, "unsplash");
-                                success_count += 1;
-                                downloaded = true;
-                                break;
+            let base_ts = chrono::Utc::now().timestamp_millis() as u64;
+
+            let download_futures: Vec<_> = chunk
+                .iter()
+                .enumerate()
+                .map(|(slot, (project_id, _))| {
+                    let client = client.clone();
+                    let project_id = project_id.clone();
+                    let seed = base_ts + slot as u64 + (pass as u64 * 100_000);
+                    let url = format!("https://picsum.photos/800/600?random={}", seed);
+                    let output_path = artwork_dir.join(format!("{}_{}_picsum.jpg", project_id, seed));
+                    async move {
+                        match client.get(&url).header("User-Agent", "DBundone/1.0").send().await {
+                            Ok(resp) if resp.status().is_success() => {
+                                if let Ok(bytes) = resp.bytes().await {
+                                    if bytes.len() > 100 && fs::write(&output_path, &bytes).is_ok() {
+                                        return Some((project_id, output_path.to_string_lossy().to_string()));
+                                    }
+                                }
+                                None
                             }
+                            _ => None,
                         }
                     }
+                })
+                .collect();
+
+            let chunk_results = join_all(download_futures).await;
+
+            // Map results back to the chunk entries so we know which succeeded/failed.
+            for (entry, result) in chunk.iter().zip(chunk_results.into_iter()) {
+                if let Some((project_id, path_str)) = result {
+                    let database = db.0.lock().map_err(|e| e.to_string())?;
+                    let _ = database.update_project(&project_id, &serde_json::json!({ "artworkPath": path_str }));
+                    let _ = database.add_artwork_history(&project_id, &path_str, "unsplash");
+                    success_count += 1;
+                } else {
+                    still_failed.push(entry.clone());
                 }
-                _ => {}
             }
 
-            // Short delay before retry
-            tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+            app.emit("photo-progress", serde_json::json!({
+                "current": success_count, "total": total, "added": success_count,
+                "file": format!("{}/{} done", success_count, total),
+                "isRunning": true, "cancelled": false
+            })).ok();
         }
 
-        if !downloaded {
-            log::warn!("Failed to fetch photo for project: {}", project_title);
-        }
-
-        // Small delay between requests to be polite to the API
-        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+        remaining = still_failed;
     }
 
     app.emit("photo-progress", serde_json::json!({
@@ -2037,18 +2232,25 @@ pub async fn remove_all_artwork(
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let artwork_dir = app_data_dir.join("artwork");
 
-    // Clear artworkPath from all projects in DB
+    // Clear artworkPath from all projects and groups in DB
     let cleared_count = {
         let database = db.0.lock().map_err(|e| e.to_string())?;
-        let all_projects = database.get_projects()?;
         let mut count = 0;
-        for project in &all_projects {
+        for project in database.get_projects()? {
             if project.artwork_path.is_some() {
                 let _ = database.update_project(
                     &project.id,
                     &serde_json::json!({ "artworkPath": null }),
                 );
                 count += 1;
+            }
+        }
+        for group in database.get_groups()? {
+            if group.artwork_path.is_some() {
+                let _ = database.update_group(
+                    &group.id,
+                    &serde_json::json!({ "artworkPath": null }),
+                );
             }
         }
         count
@@ -2754,6 +2956,63 @@ pub fn clear_flp_analysis_cache(
     Ok(true)
 }
 
+// ============ ALS ANALYSIS ============
+
+/// Lightweight metadata (bpm, tracks, creator, ...) for a single .als file.
+#[tauri::command]
+pub fn extract_als_metadata(file_path: String) -> Result<Value, String> {
+    match crate::als_parser::parse_als(&file_path) {
+        Ok(meta) => Ok(meta.to_json_value()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Deep analysis (plugins, samples, tracks) for a single .als file.
+#[tauri::command]
+pub fn analyze_als_project(file_path: String) -> Result<Value, String> {
+    let analysis = crate::als_parser::analyze_als(&file_path)?;
+    serde_json::to_value(&analysis).map_err(|e| e.to_string())
+}
+
+// ============ TRACKTION / WAVEFORM ANALYSIS ============
+
+/// Lightweight metadata (bpm, tracks, app version, ...) for a .tracktionedit file.
+#[tauri::command]
+pub fn extract_tracktion_metadata(file_path: String) -> Result<Value, String> {
+    match crate::tracktion_parser::parse_tracktion(&file_path) {
+        Ok(meta) => Ok(meta.to_json_value()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Deep analysis (plugins, instruments, effect chains, MIDI clips) for a single
+/// .tracktionedit file. The result reuses the FLP analysis shape so the existing
+/// ProjectAnalysis UI renders it. Cached in the shared analysis cache by project id.
+#[tauri::command]
+pub fn analyze_tracktion_project(
+    db: State<DbState>,
+    project_id: String,
+    file_path: String,
+) -> Result<serde_json::Value, String> {
+    // Check cache first (shared with FLP analysis cache — it's a generic JSON store).
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    if let Ok(Some(cached)) = database.get_flp_analysis_cache(&project_id) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&cached) {
+            return Ok(val);
+        }
+    }
+    drop(database);
+
+    let analysis = crate::tracktion_parser::analyze_tracktion(&file_path)?;
+    let json = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
+    let json_str = serde_json::to_string(&analysis).map_err(|e| e.to_string())?;
+
+    let database = db.0.lock().map_err(|e| e.to_string())?;
+    let _ = database.save_flp_analysis_cache(&project_id, &json_str);
+
+    Ok(json)
+}
+
 // ============ USER PROFILE ============
 
 #[tauri::command]
@@ -2971,6 +3230,119 @@ pub fn capture_window_screenshot(
     _app_data_dir: State<AppDataDir>,
 ) -> Result<String, String> {
     Err("Screenshot capture is only supported on Windows".to_string())
+}
+
+// ============ SHARED PROJECT LOCAL CACHE ============
+// Each shared project gets its own subfolder under <app_data>/shared/, named
+// "<sanitized_title>__<short_share_id>". Audio + project files for that share
+// are downloaded once and re-used. The folder layout is what the user can open
+// via "Show in folder".
+
+fn sanitize_for_folder(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => out.push('_'),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    let trimmed = out.trim_matches(|c: char| c == '.' || c == ' ').to_string();
+    if trimmed.is_empty() { "shared".to_string() } else { trimmed }
+}
+
+fn shared_project_dir(app_data_dir: &Path, share_id: &str, project_title: &str) -> PathBuf {
+    let short_id: String = share_id.chars().take(8).collect();
+    let folder = format!("{}__{}", sanitize_for_folder(project_title), short_id);
+    app_data_dir.join("shared").join(folder)
+}
+
+#[tauri::command]
+pub fn get_shared_file_path(
+    share_id: String,
+    project_title: String,
+    file_name: String,
+    app_data_dir: State<AppDataDir>,
+) -> Result<Option<String>, String> {
+    let dir = shared_project_dir(&app_data_dir.0, &share_id, &project_title);
+    let path = dir.join(sanitize_for_folder(&file_name));
+    if path.exists() {
+        Ok(Some(path.to_string_lossy().to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub async fn download_shared_file(
+    share_id: String,
+    project_title: String,
+    file_name: String,
+    url: String,
+    app_data_dir: State<'_, AppDataDir>,
+) -> Result<String, String> {
+    let dir = shared_project_dir(&app_data_dir.0, &share_id, &project_title);
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create folder: {}", e))?;
+
+    let safe_name = sanitize_for_folder(&file_name);
+    let dest = dir.join(&safe_name);
+
+    if dest.exists() {
+        return Ok(dest.to_string_lossy().to_string());
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Download failed: HTTP {}", resp.status()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    fs::write(&dest, &bytes).map_err(|e| format!("Failed to write file: {}", e))?;
+
+    Ok(dest.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn reveal_in_folder(file_path: String) -> Result<Value, String> {
+    let path = Path::new(&file_path);
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let result = Command::new("explorer")
+            .arg("/select,")
+            .arg(&file_path)
+            .spawn();
+        return match result {
+            Ok(_) => Ok(serde_json::json!({ "success": true })),
+            Err(_) => {
+                let parent = path.parent().unwrap_or(path);
+                match open::that(parent) {
+                    Ok(_) => Ok(serde_json::json!({ "success": true })),
+                    Err(e) => Ok(serde_json::json!({ "success": false, "error": e.to_string() })),
+                }
+            }
+        };
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let result = Command::new("open").arg("-R").arg(&file_path).spawn();
+        return match result {
+            Ok(_) => Ok(serde_json::json!({ "success": true })),
+            Err(e) => Ok(serde_json::json!({ "success": false, "error": e.to_string() })),
+        };
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let parent = path.parent().unwrap_or(path);
+        match open::that(parent) {
+            Ok(_) => Ok(serde_json::json!({ "success": true })),
+            Err(e) => Ok(serde_json::json!({ "success": false, "error": e.to_string() })),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3270,4 +3642,18 @@ pub async fn get_audio_analysis(
         serde_json::from_str(&json).map_err(|e| format!("Failed to parse analysis: {}", e))?;
 
     Ok(Some(analysis))
+}
+
+// ============ Canvas Data ============
+
+#[tauri::command]
+pub fn get_canvas_data(db: State<DbState>, project_id: String) -> Result<Option<String>, String> {
+    let db = db.0.lock().map_err(|e| e.to_string())?;
+    db.get_canvas_data(&project_id)
+}
+
+#[tauri::command]
+pub fn save_canvas_data(db: State<DbState>, project_id: String, snapshot: String) -> Result<bool, String> {
+    let db = db.0.lock().map_err(|e| e.to_string())?;
+    db.save_canvas_data(&project_id, &snapshot).map(|_| true)
 }

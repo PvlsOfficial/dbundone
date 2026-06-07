@@ -112,8 +112,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           return
         }
       } catch (e: any) {
-        console.warn('[Auth] getSession failed:', e.message, '— clearing stored session')
-        clearStoredSession()
+        // Keep stored session intact on transient errors (e.g. network timeout) —
+        // onAuthStateChange will pick it up if/when the call eventually succeeds.
+        console.warn('[Auth] getSession failed:', e.message)
       }
       if (!cancelled) patch({ isLoading: false })
     }

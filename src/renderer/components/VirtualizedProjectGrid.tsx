@@ -25,6 +25,7 @@ interface VirtualizedProjectGridProps {
   onOpenArtworkManager?: (project: Project) => void;
   pluginSessions?: PluginSession[];
   shareStatusMap?: Record<string, 'pending' | 'accepted' | 'mixed'>;
+  onRateProject?: (project: Project, rating: number) => void;
 }
 
 // Grid column configuration based on grid size (matches Dashboard.tsx)
@@ -92,6 +93,7 @@ export const VirtualizedProjectGrid = React.memo<VirtualizedProjectGridProps>(({
   onOpenArtworkManager,
   pluginSessions,
   shareStatusMap,
+  onRateProject,
 }) => {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -255,6 +257,7 @@ export const VirtualizedProjectGrid = React.memo<VirtualizedProjectGridProps>(({
             onOpenArtworkManager={onOpenArtworkManager}
             pluginSessions={pluginSessions}
             shareStatus={shareStatusMap?.[project.id]}
+            onRateProject={onRateProject}
           />
         ))}
       </div>

@@ -4,9 +4,9 @@ import {
   Plus,
   Search,
   SlidersHorizontal,
-  Grid2X2,
+  LayoutGrid,
   List,
-  GalleryHorizontalEnd,
+  Grid3X3,
   CheckSquare,
   X,
   Music,
@@ -14,14 +14,17 @@ import {
   FolderPlus,
   Folder,
   Shuffle,
+  Dices,
   Lightbulb,
   Headphones,
   Disc3,
   CheckCircle2,
   PartyPopper,
   Archive,
+  Star,
 } from "lucide-react"
 import { ProjectModal } from "../components/ProjectModal"
+import { CaseOpening } from "../components/CaseOpening"
 import { Project, FilterOptions, AudioPlayerState, ProjectStatus, ProjectGroup, AppSettings, Tag, PluginSession } from "@shared/types"
 import { cn } from "@/lib/utils"
 import { useToast } from "../components/ui/toast"
@@ -81,6 +84,7 @@ interface DashboardProps {
   onOpenArtworkManager?: (project: Project) => void
   pluginSessions?: PluginSession[]
   onScanFolder?: () => void
+  onRateProject?: (project: Project, rating: number) => void
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -108,9 +112,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onOpenArtworkManager,
   pluginSessions,
   onScanFolder,
+  onRateProject,
 }) => {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [showCaseOpening, setShowCaseOpening] = useState(false)
   const [filters, setFilters] = useState<FilterOptions>({
     searchQuery: "",
     sortBy: "date-newest",
@@ -121,6 +127,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
     genreFilter: null,
     artistFilter: null,
     recordingFilter: null,
+    ratingFilter: null,
   })
   const [projectVersionSources, setProjectVersionSources] = useState<Record<string, string[]>>({})
   const [selectionMode, setSelectionMode] = useState(false)
@@ -307,6 +314,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
       })
     }
 
+    // Rating filter
+    if (filters.ratingFilter !== null) {
+      result = result.filter((project) => (project.rating ?? 0) >= filters.ratingFilter!)
+    }
+
     // Sort - Optimized with precomputed values
     switch (filters.sortBy) {
       case "name-asc":
@@ -349,6 +361,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
         break
       case "time-spent-desc":
         result.sort((a, b) => (b.timeSpent || 0) - (a.timeSpent || 0))
+        break
+      case "rating-desc":
+        result.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+        break
+      case "rating-asc":
+        result.sort((a, b) => (a.rating ?? 0) - (b.rating ?? 0))
         break
     }
 
@@ -569,15 +587,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     {t('dashboard.stop')} ({photoProgress.added}/{photoProgress.total})
                   </Button>
                 ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={onFetchUnsplashPhotosForAll}
-                    className="gap-2"
-                  >
-                    <Shuffle className="w-4 h-4" />
-                    {t('dashboard.addPhotosToAll')}
-                  </Button>
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={onFetchUnsplashPhotosForAll}
+                      className="gap-2"
+                    >
+                      <Shuffle className="w-4 h-4" />
+                      {t('dashboard.addPhotosToAll')}
+                    </Button>
+                  </>
                 )
               )}
               <Button
@@ -587,6 +607,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
               >
                 <CheckSquare className="w-4 h-4 mr-2" />
                 {selectionMode ? t('dashboard.done') : t('dashboard.select')}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowCaseOpening(true)}
+                className="gap-2 border-violet-500/40 text-violet-400 hover:bg-violet-500/10 hover:border-violet-500/60"
+                title="Open a random project"
+              >
+                <Dices className="w-4 h-4" />
+                Random
               </Button>
               <Button onClick={handleNewProject} className="gap-2">
                 <Plus className="w-4 h-4" />
@@ -641,6 +671,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <SelectItem value="key">{t('dashboard.sort.key')}</SelectItem>
                 <SelectItem value="tags-asc">{t('dashboard.sort.tagsAsc')}</SelectItem>
                 <SelectItem value="tags-desc">{t('dashboard.sort.tagsDesc')}</SelectItem>
+                <SelectItem value="rating-desc">Rating: High → Low</SelectItem>
+                <SelectItem value="rating-asc">Rating: Low → High</SelectItem>
               </SelectContent>
             </Select>
 
@@ -668,7 +700,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         : "text-muted-foreground hover:text-foreground"
                     )}
                   >
-                    <Grid2X2 className="w-4 h-4" />
+                    <LayoutGrid className="w-4 h-4" />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>{t('dashboard.gridView')}</TooltipContent>
@@ -685,7 +717,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         : "text-muted-foreground hover:text-foreground"
                     )}
                   >
-                    <GalleryHorizontalEnd className="w-4 h-4" />
+                    <Grid3X3 className="w-4 h-4" />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>{t('dashboard.galleryView')}</TooltipContent>
@@ -875,8 +907,34 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     </div>
                   </div>
 
+                  {/* Star Rating Filter */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">Min. Rating</label>
+                    <div className="flex items-center gap-2">
+                      {[1, 2, 3, 4, 5].map((stars) => {
+                        const isActive = filters.ratingFilter === stars
+                        return (
+                          <button
+                            key={stars}
+                            type="button"
+                            onClick={() => setFilters(prev => ({ ...prev, ratingFilter: isActive ? null : stars }))}
+                            className={cn(
+                              "flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-medium transition-all",
+                              isActive
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                            )}
+                          >
+                            <Star className="w-3.5 h-3.5" fill={isActive ? "currentColor" : "none"} />
+                            {stars}+
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
                   {/* Clear All Filters */}
-                  {(filters.selectedTags.length > 0 || filters.statusFilter?.length || filters.dawFilter?.length || filters.genreFilter?.length || filters.artistFilter?.length || filters.recordingFilter?.length) && (
+                  {(filters.selectedTags.length > 0 || filters.statusFilter?.length || filters.dawFilter?.length || filters.genreFilter?.length || filters.artistFilter?.length || filters.recordingFilter?.length || filters.ratingFilter !== null) && (
                     <div className="pt-2">
                       <button
                         onClick={() => setFilters({
@@ -887,6 +945,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                           genreFilter: null,
                           artistFilter: null,
                           recordingFilter: null,
+                          ratingFilter: null,
                         })}
                         className="px-3 py-1.5 rounded-full text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors"
                       >
@@ -925,6 +984,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 unsplashEnabled={settings.unsplashEnabled}
                 aiArtworkEnabled={settings.autoGenerateArtwork}
                 onOpenArtworkManager={onOpenArtworkManager}
+                onRateProject={onRateProject}
                 pluginSessions={pluginSessions}
                 shareStatusMap={shareStatusMap}
               />
@@ -973,6 +1033,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
           isOpen={isModalOpen}
           onClose={handleCloseModal}
         />
+
+        {/* Case Opening */}
+        {showCaseOpening && (
+          <CaseOpening
+            projects={projects.filter(p => !p.archived)}
+            onOpen={(project) => {
+              setShowCaseOpening(false)
+              onOpenProject(project)
+            }}
+            onClose={() => setShowCaseOpening(false)}
+          />
+        )}
       </div>
     </TooltipProvider>
   )

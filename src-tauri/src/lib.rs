@@ -1,8 +1,10 @@
+mod als_parser;
 mod audio_analysis;
 mod commands;
 mod database;
 mod flp_parser;
 mod scanner;
+mod tracktion_parser;
 mod websocket;
 
 use commands::{AppDataDir, DbState, PhotoCancelFlag, PluginServerHandle, SettingsState};
@@ -53,20 +55,39 @@ pub fn run() {
 
             let settings = commands::load_settings(&app_data_dir);
 
+            // Create the main window programmatically so we can pass --disable-pinch
+            // to WebView2 on Windows. This makes trackpad pinch fire wheel events
+            // (ctrlKey=true) instead of native browser zoom, letting tldraw handle zoom.
+            let win_builder = {
+                let b = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "main",
+                    tauri::WebviewUrl::App("index.html".into()),
+                )
+                .title("DBundone")
+                .inner_size(1000.0, 700.0)
+                .min_inner_size(1000.0, 700.0)
+                .decorations(false)
+                .center()
+                .resizable(true);
+                #[cfg(target_os = "windows")]
+                let b = b.additional_browser_args("--disable-pinch");
+                b
+            };
+            let window = win_builder.build()?;
+
             // Restore saved window size/position
             if let Some(state) = load_window_state(&app_data_dir) {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                        width: state.width,
-                        height: state.height,
-                    }));
-                    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
-                        x: state.x,
-                        y: state.y,
-                    }));
-                    if state.maximized {
-                        let _ = window.maximize();
-                    }
+                let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                    width: state.width,
+                    height: state.height,
+                }));
+                let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+                    x: state.x,
+                    y: state.y,
+                }));
+                if state.maximized {
+                    let _ = window.maximize();
                 }
             }
 
@@ -395,11 +416,13 @@ pub fn run() {
             commands::load_audio_file,
             commands::compute_audio_peaks,
             commands::get_cached_peaks,
+            commands::cache_audio_peaks,
             commands::read_image_base64,
             commands::get_app_version,
             // Scanning
             commands::scan_fl_folder,
             commands::scan_ableton_folder,
+            commands::scan_waveform_folder,
             commands::scan_daw_folder,
             commands::update_file_mod_dates,
             commands::update_daw_types,
@@ -437,6 +460,12 @@ pub fn run() {
             commands::analyze_flp_project,
             commands::get_all_flp_analyses_cached,
             commands::clear_flp_analysis_cache,
+            // ALS (Ableton) Analysis
+            commands::extract_als_metadata,
+            commands::analyze_als_project,
+            // Tracktion / Waveform Analysis
+            commands::extract_tracktion_metadata,
+            commands::analyze_tracktion_project,
             // User Profile
             commands::get_user_profile,
             commands::update_user_profile,
@@ -458,6 +487,13 @@ pub fn run() {
             commands::get_task_annotations_by_project,
             // Screenshot
             commands::capture_window_screenshot,
+            // Canvas
+            commands::get_canvas_data,
+            commands::save_canvas_data,
+            // Shared project local cache
+            commands::download_shared_file,
+            commands::get_shared_file_path,
+            commands::reveal_in_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,10 +1,10 @@
 import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  FolderOpen, 
-  Plus, 
-  X, 
-  Image, 
+import {
+  FolderOpen,
+  Plus,
+  X,
+  Image,
   ArrowLeft,
   Check,
   Trash2,
@@ -18,7 +18,10 @@ import {
   Calendar,
   Users,
   FolderPlus,
-  ImageIcon
+  ImageIcon,
+  ImagePlus,
+  Shuffle,
+  Sparkles,
 } from 'lucide-react';
 import { ProjectGroup, Project, AppSettings } from '@shared/types';
 import { Button } from '@/components/ui/button';
@@ -79,9 +82,12 @@ interface GroupsProps {
   onUpdateGroup?: (groupId: string, updates: Partial<ProjectGroup>) => void;
   onDeleteGroup?: (groupId: string) => void;
   onSettingsChange: (settings: Partial<AppSettings>) => void;
+  onOpenArtworkManager?: (group: ProjectGroup) => void;
+  onFetchUnsplashPhoto?: (group: ProjectGroup) => void;
+  onGenerateArtwork?: (group: ProjectGroup) => void;
 }
 
-export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRefresh, onOpenGroup, onUpdateGroup, onDeleteGroup, onSettingsChange }) => {
+export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRefresh, onOpenGroup, onUpdateGroup, onDeleteGroup, onSettingsChange, onOpenArtworkManager, onFetchUnsplashPhoto, onGenerateArtwork }) => {
   const { t } = useI18n();
   const [selectedGroup, setSelectedGroup] = useState<ProjectGroup | null>(null);
   
@@ -439,6 +445,12 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                       <FolderPlus className="w-4 h-4 mr-2" />
                       {t('groups.selectProjects')}
                     </ContextMenuItem>
+                    {onOpenArtworkManager && (
+                      <ContextMenuItem onClick={() => onOpenArtworkManager(group)}>
+                        <ImagePlus className="w-4 h-4 mr-2" />
+                        Manage Artwork
+                      </ContextMenuItem>
+                    )}
                     <ContextMenuItem onClick={async () => {
                       const path = await window.electron?.selectImage();
                       if (path && onUpdateGroup) {
@@ -456,6 +468,18 @@ export const Groups: React.FC<GroupsProps> = ({ groups, projects, settings, onRe
                       }}>
                         <X className="w-4 h-4 mr-2" />
                         {t('groups.removeArtwork')}
+                      </ContextMenuItem>
+                    )}
+                    {settings.unsplashEnabled && onFetchUnsplashPhoto && (
+                      <ContextMenuItem onClick={() => onFetchUnsplashPhoto(group)}>
+                        <Shuffle className="w-4 h-4 mr-2" />
+                        Random Unsplash Photo
+                      </ContextMenuItem>
+                    )}
+                    {settings.autoGenerateArtwork && onGenerateArtwork && (
+                      <ContextMenuItem onClick={() => onGenerateArtwork(group)}>
+                        <Sparkles className="w-4 h-4 mr-2" />
+                        Generate AI Artwork
                       </ContextMenuItem>
                     )}
                     <ContextMenuSeparator />

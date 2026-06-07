@@ -16,6 +16,9 @@ import {
   MessageSquare,
   Eye,
   Edit2,
+  Pin,
+  PinOff,
+  UserPlus,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -67,6 +70,31 @@ export const CollaborationPanel: React.FC<CollaborationPanelProps> = ({ project,
   const [isSharing, setIsSharing] = useState(false)
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout>>()
 
+  // Permanent collaborators (auto-shared on every new share)
+  type PermanentCollab = { id: string; email: string; displayName: string | null }
+  const [permanentCollabs, setPermanentCollabs] = useState<PermanentCollab[]>([])
+  const [showAddPermanent, setShowAddPermanent] = useState(false)
+  const [permanentSearch, setPermanentSearch] = useState("")
+  const [permanentResults, setPermanentResults] = useState<CloudProfile[]>([])
+  const [isPermanentSearching, setIsPermanentSearching] = useState(false)
+  const permanentSearchTimer = useRef<ReturnType<typeof setTimeout>>()
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const s = await window.electron?.getSettings()
+        if (s?.permanentCollaborators) setPermanentCollabs(s.permanentCollaborators)
+      } catch { /* ignore */ }
+    })()
+  }, [])
+
+  const savePermanentCollabs = useCallback(async (next: PermanentCollab[]) => {
+    setPermanentCollabs(next)
+    try { await window.electron?.setSettings({ permanentCollaborators: next }) } catch (e) {
+      console.warn('[CollabPanel] Failed to persist permanent collaborators:', e)
+    }
+  }, [])
+
   // Load existing shares for this project
   const loadShares = useCallback(async () => {
     if (!isAuthenticated || !user) return
@@ -109,6 +137,29 @@ export const CollaborationPanel: React.FC<CollaborationPanelProps> = ({ project,
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current)
     }
   }, [searchQuery, user])
+
+  // Debounced search for adding permanent collaborators
+  useEffect(() => {
+    if (!permanentSearch.trim() || !user) {
+      setPermanentResults([])
+      return
+    }
+    if (permanentSearchTimer.current) clearTimeout(permanentSearchTimer.current)
+    permanentSearchTimer.current = setTimeout(async () => {
+      setIsPermanentSearching(true)
+      try {
+        const results = await searchUsers(permanentSearch.trim(), user.id)
+        setPermanentResults(results)
+      } catch {
+        setPermanentResults([])
+      } finally {
+        setIsPermanentSearching(false)
+      }
+    }, 300)
+    return () => {
+      if (permanentSearchTimer.current) clearTimeout(permanentSearchTimer.current)
+    }
+  }, [permanentSearch, user])
 
   const handleShare = async () => {
     if (!selectedUser || !user) return
@@ -187,8 +238,18 @@ export const CollaborationPanel: React.FC<CollaborationPanelProps> = ({ project,
         }
       }
 
-      await shareProject(user.id, profile?.displayName || user.email || 'Unknown', {
-        toUserId: selectedUser.id,
+      // Build the set of recipients: the manually-selected user plus every
+      // permanent collaborator that isn't already shared with for this project.
+      const existingTargetIds = new Set(shares.map(s => s.toUser?.id).filter(Boolean) as string[])
+      const recipients: { id: string; isPermanent: boolean }[] = [{ id: selectedUser.id, isPermanent: false }]
+      for (const c of permanentCollabs) {
+        if (c.id === selectedUser.id) continue
+        if (c.id === user.id) continue
+        if (existingTargetIds.has(c.id)) continue
+        recipients.push({ id: c.id, isPermanent: true })
+      }
+
+      const baseShare = {
         projectLocalId: project.id,
         projectTitle: project.title,
         projectDaw: project.dawType,
@@ -208,8 +269,20 @@ export const CollaborationPanel: React.FC<CollaborationPanelProps> = ({ project,
         tasks: sharedTasks.length ? sharedTasks : undefined,
         plugins: sharedPlugins.length ? sharedPlugins : undefined,
         analysis: flpAnalysis || undefined,
-        message: shareMessage.trim() || undefined,
-      })
+      }
+
+      const senderName = profile?.displayName || user.email || 'Unknown'
+      const trimmedMessage = shareMessage.trim() || undefined
+
+      for (const r of recipients) {
+        await shareProject(user.id, senderName, {
+          ...baseShare,
+          toUserId: r.id,
+          message: r.isPermanent
+            ? (trimmedMessage || 'Auto-shared with permanent collaborator')
+            : trimmedMessage,
+        })
+      }
       setShowShareDialog(false)
       setSelectedUser(null)
       setSearchQuery("")
@@ -257,7 +330,7 @@ export const CollaborationPanel: React.FC<CollaborationPanelProps> = ({ project,
   }
 
   return (
-    <div className="flex flex-col gap-5 max-w-2xl">
+    <div className="flex flex-col gap-5">
       {/* Header */}
       <h2 className="text-lg font-semibold flex items-center gap-2">
         <Users className="w-5 h-5 text-primary" />
@@ -280,6 +353,111 @@ export const CollaborationPanel: React.FC<CollaborationPanelProps> = ({ project,
           <Send className="w-3.5 h-3.5" />
           Share Project
         </Button>
+      </div>
+
+      {/* Permanent collaborators */}
+      <div className="rounded-xl border border-border/40 bg-muted/10 p-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5 text-xs font-semibold">
+            <Pin className="w-3.5 h-3.5 text-primary" />
+            Permanent Collaborators
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 gap-1 text-xs"
+            onClick={() => setShowAddPermanent(v => !v)}
+          >
+            <UserPlus className="w-3 h-3" />
+            {showAddPermanent ? 'Done' : 'Add'}
+          </Button>
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          These users are automatically included when you share any project.
+        </p>
+
+        {permanentCollabs.length === 0 && !showAddPermanent && (
+          <p className="text-xs text-muted-foreground/70 italic">No permanent collaborators yet.</p>
+        )}
+
+        {permanentCollabs.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {permanentCollabs.map(c => (
+              <Badge
+                key={c.id}
+                variant="secondary"
+                className="text-[11px] gap-1.5 pl-2 pr-1 py-1 bg-primary/10 text-primary border-0"
+              >
+                <span className="truncate max-w-[160px]">{c.displayName || c.email}</span>
+                <button
+                  type="button"
+                  onClick={() => savePermanentCollabs(permanentCollabs.filter(x => x.id !== c.id))}
+                  className="hover:bg-primary/20 rounded p-0.5"
+                  title="Remove"
+                >
+                  <PinOff className="w-2.5 h-2.5" />
+                </button>
+              </Badge>
+            ))}
+          </div>
+        )}
+
+        {showAddPermanent && (
+          <div className="space-y-1.5 pt-1">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
+              <Input
+                value={permanentSearch}
+                onChange={e => setPermanentSearch(e.target.value)}
+                placeholder="Search by email or name..."
+                className="pl-8 h-8 text-xs"
+              />
+            </div>
+            {isPermanentSearching && (
+              <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                <Loader2 className="w-3 h-3 animate-spin" /> Searching…
+              </div>
+            )}
+            {permanentResults.length > 0 && (
+              <div className="space-y-1 max-h-40 overflow-auto">
+                {permanentResults.map(r => {
+                  const already = permanentCollabs.some(c => c.id === r.id)
+                  return (
+                    <button
+                      key={r.id}
+                      type="button"
+                      disabled={already}
+                      onClick={() => {
+                        if (already) return
+                        savePermanentCollabs([
+                          ...permanentCollabs,
+                          { id: r.id, email: r.email, displayName: r.displayName },
+                        ])
+                        setPermanentSearch("")
+                        setPermanentResults([])
+                      }}
+                      className={cn(
+                        "w-full flex items-center gap-2 p-1.5 rounded-md text-left transition-colors text-xs",
+                        already
+                          ? "opacity-50 cursor-not-allowed bg-muted/20"
+                          : "hover:bg-muted/40"
+                      )}
+                    >
+                      <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-[10px] font-semibold text-primary flex-shrink-0">
+                        {(r.displayName || r.email)[0].toUpperCase()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="truncate font-medium">{r.displayName || r.email}</p>
+                        <p className="truncate text-[10px] text-muted-foreground">{r.email}</p>
+                      </div>
+                      {already && <Check className="w-3 h-3 text-primary flex-shrink-0" />}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Error */}

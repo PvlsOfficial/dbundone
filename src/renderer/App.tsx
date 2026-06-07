@@ -12,6 +12,7 @@ import { Statistics } from "./pages/Statistics"
 import { ProjectDetail } from "./pages/ProjectDetail"
 import { HelpGuide } from "./pages/HelpGuide"
 import { SharedWithMe } from "./pages/SharedWithMe"
+import { BoardPage } from "./pages/BoardPage"
 import { AppTour } from "./components/AppTour"
 import { ArtworkManager } from "./components/ArtworkManager"
 import { AudioPlayer } from "./components/AudioPlayer"
@@ -29,7 +30,7 @@ import { syncVersionToShares } from "./lib/sharingService"
 // Check if running in Electron - must be a function to check at runtime after preload
 const isElectron = () => typeof window !== 'undefined' && typeof window.electron !== 'undefined'
 
-type Page = "dashboard" | "groups" | "group-detail" | "scheduler" | "settings" | "statistics" | "project-detail" | "help" | "shared"
+type Page = "dashboard" | "groups" | "group-detail" | "scheduler" | "settings" | "statistics" | "project-detail" | "help" | "shared" | "board"
 
 function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onSettingsChange: (settings: Partial<AppSettings>) => void }) {
   const [currentPage, setCurrentPage] = useState<Page>("dashboard")
@@ -67,9 +68,19 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
   } | null>(null)
 
   const [artworkManagerProject, setArtworkManagerProject] = useState<Project | null>(null)
+  const [artworkManagerGroup, setArtworkManagerGroup] = useState<ProjectGroup | null>(null)
   const [showTour, setShowTour] = useState(false)
 
   // Show tour on first launch
+  // Prevent WebView2 from consuming Ctrl+Wheel / trackpad pinch as browser zoom.
+  // Must be non-passive to call preventDefault(). Registered at window level so
+  // it fires even before tldraw's internal listeners and regardless of render state.
+  useEffect(() => {
+    const handler = (e: WheelEvent) => { if (e.ctrlKey) e.preventDefault() }
+    window.addEventListener("wheel", handler, { passive: false })
+    return () => window.removeEventListener("wheel", handler)
+  }, [])
+
   useEffect(() => {
     if (!settings.hasSeenTour && !isLoading) {
       // Small delay to let the app render first
@@ -99,8 +110,14 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
   // Refs for stable callbacks - avoid re-creating callbacks when these change frequently
   const projectsRef = useRef(projects)
   projectsRef.current = projects
+  const groupsRef = useRef(groups)
+  groupsRef.current = groups
   const playerStateRef = useRef(playerState)
   playerStateRef.current = playerState
+  const currentPageRef = useRef(currentPage)
+  currentPageRef.current = currentPage
+  const previousPageRef = useRef(previousPage)
+  previousPageRef.current = previousPage
 
   const { addToast } = useToast()
   const { isAuthenticated, user, profile } = useAuth()
@@ -405,6 +422,8 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             result = await window.electron?.scanFLStudioFolder(folderPath)
           } else if (daw === "Ableton Live") {
             result = await window.electron?.scanAbletonFolder(folderPath)
+          } else if (daw === "Waveform") {
+            result = await window.electron?.scanWaveformFolder(folderPath)
           } else {
             result = await window.electron?.scanDAWFolder(folderPath, daw)
           }
@@ -465,6 +484,77 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoading]) // Only run once after initial load
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Skip if focus is in an editable element
+      const target = e.target as HTMLElement
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target.contentEditable === "true"
+      ) {
+        return
+      }
+
+      // Skip if any modal/dialog is open
+      if (document.querySelector('[role="dialog"]')) {
+        return
+      }
+
+      if (e.ctrlKey) {
+        switch (e.key) {
+          case "1":
+            e.preventDefault()
+            setCurrentPage("dashboard")
+            break
+          case "2":
+            e.preventDefault()
+            setCurrentPage("groups")
+            break
+          case "3":
+            e.preventDefault()
+            setCurrentPage("scheduler")
+            break
+          case "4":
+            e.preventDefault()
+            setCurrentPage("statistics")
+            break
+          case "5":
+            e.preventDefault()
+            if (settings.experimentalCanvasBoards) setCurrentPage("board")
+            break
+          case ",":
+            e.preventDefault()
+            setCurrentPage("settings")
+            break
+          case "/":
+            e.preventDefault()
+            setCurrentPage("help")
+            break
+          case "r":
+          case "R":
+            e.preventDefault()
+            refreshData()
+            break
+        }
+        return
+      }
+
+      if (e.key === "Escape") {
+        const page = currentPageRef.current
+        const detailPages: Page[] = ["project-detail", "group-detail", "help", "settings", "statistics", "scheduler"]
+        if (detailPages.includes(page)) {
+          const prev = previousPageRef.current
+          setCurrentPage(prev === page ? "dashboard" : prev)
+        }
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [refreshData, settings.experimentalCanvasBoards])
 
   const handleScanFolderWithSelection = useCallback(async () => {
     if (!isElectron()) {
@@ -527,6 +617,8 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
           result = await window.electron?.scanFLStudioFolder(folderPath)
         } else if (daw === "Ableton Live") {
           result = await window.electron?.scanAbletonFolder(folderPath)
+        } else if (daw === "Waveform") {
+          result = await window.electron?.scanWaveformFolder(folderPath)
         } else {
           result = await window.electron?.scanDAWFolder(folderPath, daw)
         }
@@ -762,6 +854,77 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     setArtworkManagerProject(latest)
   }, [])
 
+  const handleOpenGroupArtworkManager = useCallback((group: ProjectGroup) => {
+    const latest = groupsRef.current.find(g => g.id === group.id) || group
+    setArtworkManagerGroup(latest)
+  }, [])
+
+  const handleGroupChangeArtwork = useCallback(async (group: ProjectGroup) => {
+    try {
+      const imagePath = await window.electron?.selectImage()
+      if (imagePath) {
+        await window.electron?.updateGroup(group.id, { artworkPath: imagePath })
+        invalidateImageCache()
+        await refreshData()
+        addToast({ title: "Artwork changed", variant: "success" })
+      }
+    } catch {
+      addToast({ title: "Failed to change artwork", variant: "destructive" })
+    }
+  }, [addToast, refreshData])
+
+  const handleGroupRemoveArtwork = useCallback(async (group: ProjectGroup) => {
+    try {
+      if (group.artworkPath) invalidateImageCache(group.artworkPath)
+      await window.electron?.updateGroup(group.id, { artworkPath: null })
+      await refreshData()
+      addToast({ title: "Artwork removed", variant: "success" })
+    } catch {
+      addToast({ title: "Failed to remove artwork", variant: "destructive" })
+    }
+  }, [addToast, refreshData])
+
+  const handleGroupGenerateArtwork = useCallback(async (group: ProjectGroup) => {
+    try {
+      addToast({ title: "Generating artwork...", description: `Creating AI artwork for "${group.name}"` })
+      const artworkPath = await window.electron?.generateArtwork(group.id, group.name)
+      if (artworkPath) {
+        await window.electron?.updateGroup(group.id, { artworkPath })
+        invalidateImageCache(artworkPath)
+        await refreshData()
+        addToast({ title: "Artwork generated", variant: "success" })
+      }
+    } catch {
+      addToast({ title: "Generation failed", description: "Could not generate artwork.", variant: "destructive" })
+    }
+  }, [addToast, refreshData])
+
+  const handleGroupFetchUnsplashPhoto = useCallback(async (group: ProjectGroup) => {
+    try {
+      addToast({ title: "Fetching photo...", description: `Getting a photo for "${group.name}"` })
+      const artworkPath = await window.electron?.fetchUnsplashPhoto(group.id)
+      if (artworkPath) {
+        await window.electron?.updateGroup(group.id, { artworkPath })
+        invalidateImageCache(artworkPath)
+        await refreshData()
+        addToast({ title: "Photo fetched!", variant: "success" })
+      }
+    } catch {
+      addToast({ title: "Fetch failed", variant: "destructive" })
+    }
+  }, [addToast, refreshData])
+
+  const handleRateProject = useCallback(async (project: Project, rating: number) => {
+    const newRating = rating === 0 ? null : rating
+    setPlayerState((prev) =>
+      prev.currentTrack?.id === project.id
+        ? { ...prev, currentTrack: { ...prev.currentTrack, rating: newRating } }
+        : prev
+    )
+    await window.electron?.updateProject(project.id, { rating: newRating })
+    await refreshData()
+  }, [refreshData])
+
   const handleDeleteProject = useCallback(async (project: Project) => {
     try {
       await window.electron?.deleteProject(project.id)
@@ -847,6 +1010,8 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             result = await window.electron?.scanFLStudioFolder(folderPath)
           } else if (daw === "Ableton Live") {
             result = await window.electron?.scanAbletonFolder(folderPath)
+          } else if (daw === "Waveform") {
+            result = await window.electron?.scanWaveformFolder(folderPath)
           }
 
           if (result && result.count > 0) {
@@ -1034,6 +1199,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             onOpenArtworkManager={handleOpenArtworkManager}
             pluginSessions={pluginSessions}
             onScanFolder={handleScanFolderWithSelection}
+            onRateProject={handleRateProject}
           />
         )
       case "project-detail":
@@ -1061,6 +1227,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             onStartPluginRecording={handleStartPluginRecording}
             onStopPluginRecording={handleStopPluginRecording}
             onToggleOfflineCapture={handleToggleOfflineCapture}
+            settings={settings}
           />
         )
       case "groups":
@@ -1073,6 +1240,9 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
           onUpdateGroup={handleUpdateGroup}
           onDeleteGroup={handleDeleteGroup}
           onSettingsChange={onSettingsChange}
+          onOpenArtworkManager={handleOpenGroupArtworkManager}
+          onFetchUnsplashPhoto={handleGroupFetchUnsplashPhoto}
+          onGenerateArtwork={handleGroupGenerateArtwork}
         />
       case "group-detail":
         if (!selectedGroup) {
@@ -1124,6 +1294,23 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
         />
       case "shared":
         return <SharedWithMe />
+      case "board":
+        if (!settings.experimentalCanvasBoards) {
+          setCurrentPage("dashboard")
+          return null
+        }
+        return (
+          <BoardPage
+            projects={projects}
+            tasks={tasks}
+            settings={settings}
+            onSettingsChange={onSettingsChange}
+            onOpenProject={(projectId) => {
+              const project = projects.find(p => p.id === projectId)
+              if (project) handleOpenProject(project)
+            }}
+          />
+        )
       case "help":
         return <HelpGuide
           onBack={() => setCurrentPage(previousPage === "help" ? "dashboard" : previousPage)}
@@ -1180,9 +1367,10 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
           onScanFolder={handleScanFolder}
           onScanFolderWithSelection={handleScanFolderWithSelection}
           scanProgress={scanProgress}
+          experimentalCanvasBoards={settings.experimentalCanvasBoards}
         />
         <main className="flex-1 flex flex-col overflow-hidden min-h-0">
-          <div className="flex-1 flex flex-col overflow-auto">
+          <div className="flex-1 flex flex-col overflow-hidden min-h-0">
             {renderPage()}
           </div>
         </main>
@@ -1195,6 +1383,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             projects={projects}
             onOpenProject={handleOpenProject}
             onPlayProject={playProject}
+            onRateProject={handleRateProject}
           />
         )}
       </AnimatePresence>
@@ -1215,6 +1404,42 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
               const updated = await window.electron?.getProject(artworkManagerProject.id)
               if (updated) setArtworkManagerProject(updated)
             } catch {}
+          }}
+        />
+      )}
+      {artworkManagerGroup && (
+        <ArtworkManager
+          project={{
+            id: artworkManagerGroup.id,
+            title: artworkManagerGroup.name,
+            artworkPath: artworkManagerGroup.artworkPath,
+            audioPreviewPath: null,
+            dawProjectPath: null,
+            dawType: null,
+            bpm: 0,
+            musicalKey: '',
+            tags: [],
+            collectionName: null,
+            status: 'idea',
+            favoriteVersionId: null,
+            createdAt: artworkManagerGroup.createdAt,
+            updatedAt: artworkManagerGroup.updatedAt,
+            fileModifiedAt: null,
+            archived: false,
+            sortOrder: 0,
+          }}
+          withHistory={false}
+          isOpen={!!artworkManagerGroup}
+          onClose={() => setArtworkManagerGroup(null)}
+          settings={settings}
+          onChangeArtwork={() => handleGroupChangeArtwork(artworkManagerGroup)}
+          onRemoveArtwork={() => handleGroupRemoveArtwork(artworkManagerGroup)}
+          onGenerateArtwork={() => handleGroupGenerateArtwork(artworkManagerGroup)}
+          onFetchUnsplashPhoto={() => handleGroupFetchUnsplashPhoto(artworkManagerGroup)}
+          onRefresh={async () => {
+            await refreshData()
+            const latest = groupsRef.current.find(g => g.id === artworkManagerGroup.id)
+            if (latest) setArtworkManagerGroup(latest)
           }}
         />
       )}

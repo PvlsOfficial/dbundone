@@ -180,6 +180,10 @@ export const AuthCard: React.FC<{ className?: string }> = ({ className }) => {
             )}
             {mode === "sign-in" ? "Sign In" : "Create Account"}
           </Button>
+
+          <p className="text-[10px] text-muted-foreground text-center">
+            You'll stay signed in on this device.
+          </p>
         </form>
 
         {/* Toggle mode */}
