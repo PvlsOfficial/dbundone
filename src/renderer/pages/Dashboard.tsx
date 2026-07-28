@@ -48,6 +48,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui"
 import { VirtualizedProjectGrid } from "../components/VirtualizedProjectGrid"
+import { loadDashboardViewState, saveDashboardViewState } from "@/lib/dashboardViewState"
 import { useAuth } from "@/contexts/AuthContext"
 import { getSentShares } from "@/lib/sharingService"
 import { useI18n } from "@/i18n"
@@ -85,6 +86,9 @@ interface DashboardProps {
   pluginSessions?: PluginSession[]
   onScanFolder?: () => void
   onRateProject?: (project: Project, rating: number) => void
+  /** Reports the currently filtered+sorted projects so the audio player can
+   *  rotate through only the visible set (e.g. when the starred filter is on). */
+  onFilteredProjectsChange?: (projects: Project[]) => void
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -113,11 +117,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
   pluginSessions,
   onScanFolder,
   onRateProject,
+  onFilteredProjectsChange,
 }) => {
+  // Persisted view state (filters / search / expanded panel / scroll) restored
+  // on mount so the Projects page keeps its state across navigation & restarts.
+  const persistedView = useRef(loadDashboardViewState()).current
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [showCaseOpening, setShowCaseOpening] = useState(false)
-  const [filters, setFilters] = useState<FilterOptions>({
+  const [filters, setFilters] = useState<FilterOptions>(() => ({
     searchQuery: "",
     sortBy: "date-newest",
     selectedTags: [],
@@ -128,15 +136,19 @@ export const Dashboard: React.FC<DashboardProps> = ({
     artistFilter: null,
     recordingFilter: null,
     ratingFilter: null,
-  })
+    ratingMode: "min",
+    ...persistedView.filters,
+  }))
   const [projectVersionSources, setProjectVersionSources] = useState<Record<string, string[]>>({})
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set())
   const viewMode = settings.viewMode || "grid"
   const gridSize = settings.gridSize || "medium"
-  const [showFilters, setShowFilters] = useState(false)
+  const [showFilters, setShowFilters] = useState<boolean>(() => persistedView.showFilters ?? false)
   const [showGroupDropdown, setShowGroupDropdown] = useState(false)
-  const [searchInput, setSearchInput] = useState("")
+  const [searchInput, setSearchInput] = useState<string>(() => persistedView.searchInput ?? "")
+  const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const scrollRestoredRef = useRef(false)
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const { addToast } = useToast()
   const { user, isAuthenticated } = useAuth()
@@ -314,9 +326,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
       })
     }
 
-    // Rating filter
+    // Rating filter — "min" keeps rating >= N, "exact" keeps rating === N (0 = unrated)
     if (filters.ratingFilter !== null) {
-      result = result.filter((project) => (project.rating ?? 0) >= filters.ratingFilter!)
+      const exact = (filters.ratingMode ?? "min") === "exact"
+      const target = filters.ratingFilter
+      result = result.filter((project) => {
+        const r = project.rating ?? 0
+        return exact ? r === target : r >= target
+      })
     }
 
     // Sort - Optimized with precomputed values
@@ -372,6 +389,52 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
     return result
   }, [projects, filters, projectVersionSources])
+
+  // Keep the audio player's rotation queue in sync with the visible (filtered +
+  // sorted) projects, so e.g. the starred filter limits playback to starred ones.
+  useEffect(() => {
+    onFilteredProjectsChange?.(filteredProjects)
+  }, [filteredProjects, onFilteredProjectsChange])
+
+  // Persist filters / search / expanded-panel so the Projects page restores them.
+  useEffect(() => {
+    saveDashboardViewState({ filters, searchInput, showFilters })
+  }, [filters, searchInput, showFilters])
+
+  // Persist & restore scroll position of the project grid's scroll viewport.
+  useEffect(() => {
+    const root = scrollAreaRef.current
+    if (!root) return
+    const viewport = root.querySelector<HTMLElement>("[data-radix-scroll-area-viewport]")
+    if (!viewport) return
+
+    // Restore once after the virtualized rows have height (retry on next frame).
+    if (!scrollRestoredRef.current) {
+      const target = persistedView.scrollTop ?? 0
+      if (target > 0) {
+        const restore = () => { viewport.scrollTop = target }
+        requestAnimationFrame(() => {
+          restore()
+          // Rows are measured asynchronously; nudge again shortly after.
+          setTimeout(restore, 120)
+        })
+      }
+      scrollRestoredRef.current = true
+    }
+
+    let saveTimer: ReturnType<typeof setTimeout> | null = null
+    const onScroll = () => {
+      if (saveTimer) clearTimeout(saveTimer)
+      saveTimer = setTimeout(() => {
+        saveDashboardViewState({ scrollTop: viewport.scrollTop })
+      }, 150)
+    }
+    viewport.addEventListener("scroll", onScroll, { passive: true })
+    return () => {
+      if (saveTimer) clearTimeout(saveTimer)
+      viewport.removeEventListener("scroll", onScroll)
+    }
+  }, [persistedView.scrollTop])
 
   // Memoize handlers to prevent unnecessary re-renders
   const handleProjectSelect = useCallback((project: Project) => {
@@ -909,10 +972,58 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
                   {/* Star Rating Filter */}
                   <div className="space-y-2">
-                    <label className="text-sm font-medium text-foreground">Min. Rating</label>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-3">
+                      <label className="text-sm font-medium text-foreground">{t('dashboard.filter.rating')}</label>
+                      {/* Min / Exact mode toggle */}
+                      <div className="flex items-center bg-muted/30 rounded-lg p-0.5">
+                        {(["min", "exact"] as const).map((mode) => {
+                          const active = (filters.ratingMode ?? "min") === mode
+                          return (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => setFilters(prev => ({
+                                ...prev,
+                                ratingMode: mode,
+                                // "min 0" is a no-op, so drop the unrated selection when leaving exact mode
+                                ratingFilter: mode === "min" && prev.ratingFilter === 0 ? null : prev.ratingFilter,
+                              }))}
+                              className={cn(
+                                "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
+                                active
+                                  ? "bg-primary text-primary-foreground shadow-sm"
+                                  : "text-muted-foreground hover:text-foreground"
+                              )}
+                            >
+                              {mode === "min" ? t('dashboard.filter.ratingMin') : t('dashboard.filter.ratingExact')}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {/* Unrated / 0 stars — only meaningful in exact mode */}
+                      {(filters.ratingMode ?? "min") === "exact" && (() => {
+                        const isActive = filters.ratingFilter === 0
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => setFilters(prev => ({ ...prev, ratingFilter: isActive ? null : 0 }))}
+                            className={cn(
+                              "flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-medium transition-all",
+                              isActive
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                            )}
+                          >
+                            <Star className="w-3.5 h-3.5" fill="none" />
+                            {t('dashboard.filter.ratingUnrated')}
+                          </button>
+                        )
+                      })()}
                       {[1, 2, 3, 4, 5].map((stars) => {
                         const isActive = filters.ratingFilter === stars
+                        const exact = (filters.ratingMode ?? "min") === "exact"
                         return (
                           <button
                             key={stars}
@@ -926,7 +1037,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                             )}
                           >
                             <Star className="w-3.5 h-3.5" fill={isActive ? "currentColor" : "none"} />
-                            {stars}+
+                            {exact ? stars : `${stars}+`}
                           </button>
                         )
                       })}
@@ -960,7 +1071,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </motion.div>
 
         {/* Content */}
-        <ScrollArea className="flex-1">
+        <ScrollArea className="flex-1" ref={scrollAreaRef}>
           <div className="p-6">
             {filteredProjects.length > 0 ? (
               <VirtualizedProjectGrid

@@ -19,6 +19,12 @@ import type {
   ProjectShare,
   OnboardingState,
   DistributionLink,
+  SampleCandidate,
+  KitBuildItem,
+  KitFolderStyle,
+  KitBuildOptions,
+  KitBuildResult,
+  FlIconFont,
 } from "@shared/types";
 
 // ============ Projects ============
@@ -339,6 +345,102 @@ export const setArtworkFromHistory = (
 ): Promise<Project> =>
   invoke("set_artwork_from_history", { projectId, filePath });
 
+// ============ Cover Lab ============
+/** Read an image file as a `data:` URL (untainted — safe for canvas export). */
+export const readImageBase64 = (filePath: string): Promise<string> =>
+  invoke("read_image_base64", { filePath });
+
+/** Save raw image bytes (PNG/GIF/...) to the covers dir; returns the absolute path. */
+export const saveCoverImage = (
+  bytes: number[],
+  ext: string
+): Promise<string> => invoke("save_cover_image", { bytes, ext });
+
+/** List absolute paths of saved cover images, newest first. */
+export const listCoverLibrary = (): Promise<string[]> =>
+  invoke("list_cover_library");
+
+/** Delete a saved cover image (must live inside the covers dir). */
+export const deleteCoverImage = (path: string): Promise<boolean> =>
+  invoke("delete_cover_image", { path });
+
+/** Persist the editable Cover Lab document (JSON) behind a project's cover. */
+export const saveCoverDoc = (projectId: string, json: string): Promise<void> =>
+  invoke("save_cover_doc", { projectId, json });
+
+/** Load a project's saved editable Cover Lab document (JSON), or null. */
+export const loadCoverDoc = (projectId: string): Promise<string | null> =>
+  invoke("load_cover_doc", { projectId });
+
+/** Forget a project's editable Cover Lab document. */
+export const deleteCoverDoc = (projectId: string): Promise<void> =>
+  invoke("delete_cover_doc", { projectId });
+
+export interface StockResult {
+  id: string
+  title: string
+  thumbnail: string
+  url: string
+  source: string
+}
+
+/** Search keyless stock-media providers (wikimedia | flickr | picsum). */
+export const stockSearch = (
+  query: string,
+  kind: "photo" | "gif",
+  provider: string,
+  page: number
+): Promise<StockResult[]> => invoke("stock_search", { query, kind, provider, page });
+
+/** Download a remote image into an untainted data: URL (animated GIFs preserved). */
+export const stockFetchDataUrl = (url: string): Promise<string> =>
+  invoke("stock_fetch_data_url", { url });
+
+// ============ Stash Kit Creator ============
+/** Scan FLPs/folders/zips + loose samples, classify each sound by name + audio. */
+export const stashScanSources = (
+  paths: string[],
+  extraKeywords?: Record<string, string[]>
+): Promise<SampleCandidate[]> =>
+  invoke("stash_scan_sources", { paths, extraKeywords: extraKeywords ?? null });
+
+/** Copy selected samples into the kit taxonomy, write FL `.nfo` styling, cover + license. */
+export const stashBuildKit = (
+  outputDir: string,
+  items: KitBuildItem[],
+  folders: KitFolderStyle[],
+  options: KitBuildOptions
+): Promise<KitBuildResult> =>
+  invoke("stash_build_kit", { outputDir, items, folders, options });
+
+/** Locate FL Studio's ILGlyphsEx.ttf and return it as a data URL for the icon picker. */
+export const getFlIconFont = (overridePath?: string): Promise<FlIconFont> =>
+  invoke("get_fl_icon_font", { overridePath: overridePath ?? null });
+
+export const loadKitConfig = (): Promise<string | null> =>
+  invoke("load_kit_config");
+
+export const saveKitConfig = (json: string): Promise<void> =>
+  invoke("save_kit_config", { json });
+
+export const onStashProgress = (
+  callback: (payload: any) => void
+): Promise<UnlistenFn> =>
+  listen("stash-progress", (event) => callback(event.payload));
+
+/** Pick one or more FLP / zip files for kit ingestion. */
+export const selectFlpOrZipFiles = async (): Promise<string[]> => {
+  const result = await open({
+    multiple: true,
+    filters: [
+      { name: "FL Studio / Archives", extensions: ["flp", "zip"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+  });
+  if (!result) return [];
+  return Array.isArray(result) ? result : [result];
+};
+
 // ============ Plugin Sessions ============
 export const getPluginSessions = (): Promise<PluginSession[]> =>
   invoke("get_plugin_sessions");
@@ -449,6 +551,24 @@ export const analyzeFlpProject = (
 /** Returns all cached FLP analyses in one DB call: { [projectId]: FlpAnalysis } */
 export const getAllFlpAnalysesCached = (): Promise<Record<string, FlpAnalysis>> =>
   invoke("get_all_flp_analyses_cached");
+
+/** Analyze & cache every project's DAW file so the catalog is fully searchable. */
+export const analyzeAllProjects = (force?: boolean): Promise<{
+  success: boolean;
+  analyzed: number;
+  failed: number;
+  total: number;
+  skipped: number;
+  cancelled: boolean;
+}> => invoke("analyze_all_projects", { force: force ?? false });
+
+export const cancelAnalyzeAll = (): Promise<boolean> =>
+  invoke("cancel_analyze_all");
+
+export const onAnalyzeProgress = (
+  callback: (payload: any) => void
+): Promise<UnlistenFn> =>
+  listen("analyze-progress", (event) => callback(event.payload));
 
 export const clearFlpAnalysisCache = (
   projectId: string
@@ -712,6 +832,25 @@ export const electronCompat = {
   deleteArtworkHistoryEntry,
   setArtworkFromHistory,
 
+  // Cover Lab
+  readImageBase64,
+  saveCoverImage,
+  listCoverLibrary,
+  deleteCoverImage,
+  saveCoverDoc,
+  loadCoverDoc,
+  deleteCoverDoc,
+  stockSearch,
+  stockFetchDataUrl,
+
+  // Stash Kit Creator
+  stashScanSources,
+  stashBuildKit,
+  getFlIconFont,
+  loadKitConfig,
+  saveKitConfig,
+  selectFlpOrZipFiles,
+
   // Plugin sessions
   getPluginSessions,
   getPluginSessionsForProject,
@@ -734,6 +873,9 @@ export const electronCompat = {
 
   // FLP Analysis
   analyzeFlpProject,
+  analyzeAllProjects,
+  cancelAnalyzeAll,
+  onAnalyzeProgress,
   getAllFlpAnalysesCached,
   clearFlpAnalysisCache,
 

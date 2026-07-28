@@ -155,7 +155,7 @@ export interface ArtworkHistoryEntry {
   id: string
   projectId: string
   filePath: string
-  source: "file" | "ai" | "unsplash"
+  source: "file" | "ai" | "unsplash" | "coverlab"
   createdAt: string
 }
 
@@ -217,8 +217,10 @@ export interface FilterOptions {
   artistFilter: string[] | null
   /** Filter by recording/version source type: "has-recordings", "has-renders", "has-manual" */
   recordingFilter: string[] | null
-  /** Minimum star rating filter (1–5), null = no filter */
+  /** Star rating filter value (0–5), null = no filter. 0 = unrated (exact mode only). */
   ratingFilter: number | null
+  /** How ratingFilter is applied: "min" = at least N stars, "exact" = exactly N stars. Defaults to "min". */
+  ratingMode?: "min" | "exact"
 }
 
 export interface AudioPlayerState {
@@ -537,3 +539,157 @@ export const IPC_CHANNELS = {
   CAPTURE_WINDOW_SCREENSHOT: "screenshot:capture",
 
 } as const
+
+// ── Stash Kit Creator ────────────────────────────────────────────────────────
+
+/** Canonical sound types the backend classifier can emit. */
+export type SoundType =
+  | "kick" | "snare" | "clap" | "hat_closed" | "hat_open" | "perc" | "808"
+  | "bass" | "tom" | "rim" | "crash" | "ride" | "cymbal" | "shaker" | "snap"
+  | "fx" | "vocal" | "loop" | "melody" | "unknown"
+
+export interface AudioFeatures {
+  durationSecs: number
+  peak: number
+  rms: number
+  crest: number
+  attackSecs: number
+  decaySecs: number
+  zcr: number
+  subRatio: number
+  lowRatio: number
+  midRatio: number
+  highRatio: number
+  centroidHz: number
+  rolloffHz: number
+  flatness: number
+  pitchHz: number
+  pitchConf: number
+  onsets: number
+  sampleRate: number
+}
+
+export interface SampleCandidate {
+  id: string
+  sourcePath: string
+  fileName: string
+  ext: string
+  size: number
+  category: SoundType | string
+  confidence: number
+  method: "audio" | "audio+name" | "name" | string
+  fromFlp: string | null
+  flpChannel: string | null
+  flpColor: string | null
+  key: string | null        // musical key/note for tonal one-shots, e.g. "C#2"
+  tonal: boolean
+  distorted: boolean
+  lengthClass: "short" | "medium" | "long" | string
+  peaks: number[]           // embedded waveform (instant render, no extra calls)
+  features: AudioFeatures | null
+}
+
+/** One category in a kit template: maps a sound type → folder path + full FL styling. */
+export interface KitCategory {
+  id: string
+  name: string
+  folderPath: string
+  keywords: string[]
+  color: string | null
+  iconIndex: number | null
+  tip: string | null
+  sortGroup: number | null
+  heightOfs: number | null
+  visible: boolean
+  /** Optional descriptor-based sub-folders, e.g. split 808s by key. */
+  splitBy?: "none" | "key" | "length" | "distorted"
+}
+
+export interface KitTemplate {
+  id: string
+  name: string
+  layout: "type-first" | "category-first" | "custom"
+  builtin?: boolean
+  categories: KitCategory[]
+}
+
+export interface ColorPreset {
+  id: string
+  name: string
+  colors: Record<string, string> // categoryId → "#RRGGBB"
+}
+
+/** A drum kit that has been built — shown in the library grid. */
+export interface SavedKit {
+  id: string
+  name: string
+  outputDir: string
+  coverPath: string | null
+  createdAt: string
+  sampleCount: number
+  templateId: string
+  flVersion: string
+}
+
+/** Persisted Stash Kit config (templates, presets, library, overrides, attachments). */
+export interface KitConfig {
+  templates: KitTemplate[]
+  activeTemplateId: string
+  colorPresets: ColorPreset[]
+  savedKits: SavedKit[]
+  categoryOverrides: Record<string, string>
+  imageAttachments: Record<string, string>
+  iconFontPath: string | null
+  flVersion: string
+}
+
+export interface KitBuildItem {
+  sourcePath: string
+  destRelPath: string
+}
+
+export interface KitFolderStyle {
+  relPath: string // "" = kit root folder
+  color: string | null
+  iconIndex: number | null
+  tip: string | null
+  sortGroup: number | null
+  heightOfs: number | null
+  visible: boolean | null
+}
+
+export interface KitBuildOptions {
+  writeNfo: boolean
+  dedup: boolean
+  agreementText?: string | null
+  coverPng?: number[] | null
+  rootStyle?: KitFolderStyle | null
+}
+
+export interface KitBuildResult {
+  copied: number
+  skipped: number
+  errors: string[]
+  outputDir: string
+  coverPath: string | null
+}
+
+export interface FlIconFont {
+  found: boolean
+  path: string | null
+  dataUrl: string | null
+  base: number
+  glyphs: number[] // codepoints with real glyphs; IconIndex = codepoint - base
+}
+
+/** Selectable FL Studio versions (for export targeting / metadata). */
+export const FL_VERSIONS = ["FL 2024", "FL 21", "FL 20", "FL 2025"] as const
+
+export interface StashScanProgress {
+  current: number
+  total: number
+  file: string
+  phase: "discovering" | "analyzing" | "complete" | string
+  isScanning: boolean
+}
+

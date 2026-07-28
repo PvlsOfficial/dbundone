@@ -13,6 +13,9 @@ import { ProjectDetail } from "./pages/ProjectDetail"
 import { HelpGuide } from "./pages/HelpGuide"
 import { SharedWithMe } from "./pages/SharedWithMe"
 import { BoardPage } from "./pages/BoardPage"
+import { CoverLab, CoverLabTarget } from "./pages/CoverLab"
+import { StashKit } from "./pages/StashKit"
+import { VizLab } from "./pages/VizLab"
 import { AppTour } from "./components/AppTour"
 import { ArtworkManager } from "./components/ArtworkManager"
 import { AudioPlayer } from "./components/AudioPlayer"
@@ -20,7 +23,8 @@ import { ToastProvider, useToast } from "./components/ui/toast"
 import { ThemeProvider } from "./components/ThemeProvider"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { I18nProvider } from "./i18n"
-import { Project, ProjectGroup, Task, Tag, AudioPlayerState, AppSettings, PluginSession, PluginEvent } from "@shared/types"
+import { Project, ProjectGroup, Task, Tag, AudioPlayerState, AppSettings, PluginSession, PluginEvent, FlpAnalysis } from "@shared/types"
+import { CatalogSearch } from "./components/CatalogSearch"
 import { DEFAULT_SETTINGS } from "@/lib/constants"
 import { invalidateImageCache } from "@/lib/utils"
 import { PluginStatusBadge } from "./components/PluginStatus"
@@ -30,7 +34,7 @@ import { syncVersionToShares } from "./lib/sharingService"
 // Check if running in Electron - must be a function to check at runtime after preload
 const isElectron = () => typeof window !== 'undefined' && typeof window.electron !== 'undefined'
 
-type Page = "dashboard" | "groups" | "group-detail" | "scheduler" | "settings" | "statistics" | "project-detail" | "help" | "shared" | "board"
+type Page = "dashboard" | "groups" | "group-detail" | "scheduler" | "settings" | "statistics" | "project-detail" | "help" | "shared" | "board" | "cover-lab" | "stash-kit" | "viz-lab"
 
 function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onSettingsChange: (settings: Partial<AppSettings>) => void }) {
   const [currentPage, setCurrentPage] = useState<Page>("dashboard")
@@ -50,6 +54,10 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     volume: 0.8,
   })
   const savedPlayerStateRef = useRef<AudioPlayerState | null>(null)
+  // Projects the audio player rotates through (next/previous). Mirrors the
+  // dashboard's filtered+sorted list so filters like "starred" limit playback;
+  // null = fall back to all projects.
+  const [playerQueue, setPlayerQueue] = useState<Project[] | null>(null)
   const [scanProgress, setScanProgress] = useState<{
     current: number;
     total: number;
@@ -67,8 +75,21 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     cancelled: boolean;
   } | null>(null)
 
+  // Catalog DNA search (Ctrl/Cmd+K) — searchable fingerprint of the whole catalog.
+  // (Plugin sessions reuse the existing `pluginSessions` state declared below.)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [flpAnalyses, setFlpAnalyses] = useState<Record<string, FlpAnalysis>>({})
+
+  // Re-pull cached analyses (e.g. after indexing the whole catalog) so search updates.
+  const reloadAnalyses = useCallback(() => {
+    window.electron?.getAllFlpAnalysesCached?.()
+      .then((analyses) => setFlpAnalyses(analyses || {}))
+      .catch((err) => console.error("Failed to reload catalog analyses:", err))
+  }, [])
+
   const [artworkManagerProject, setArtworkManagerProject] = useState<Project | null>(null)
   const [artworkManagerGroup, setArtworkManagerGroup] = useState<ProjectGroup | null>(null)
+  const [coverLabTarget, setCoverLabTarget] = useState<CoverLabTarget | null>(null)
   const [showTour, setShowTour] = useState(false)
 
   // Show tour on first launch
@@ -146,6 +167,13 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
       setGroups(groupsData)
       setTasks(tasksData)
       setTags(tagsData)
+
+      // Load cached DAW analyses for catalog search (plugins/samples/channels).
+      // Best-effort: search degrades gracefully to metadata-only if this fails.
+      // (Plugin sessions are kept current separately via plugin events.)
+      window.electron?.getAllFlpAnalysesCached?.()
+        .then((analyses) => setFlpAnalyses(analyses || {}))
+        .catch((err) => console.error("Failed to load catalog analyses:", err))
 
       // Update selectedProject if it exists in the refreshed data
       if (selectedProject) {
@@ -488,6 +516,14 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
   // Global keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Catalog DNA search — works from anywhere, including inputs. Ctrl/Cmd+K or
+      // Ctrl/Cmd+F (the latter overrides the WebView's built-in find dialog).
+      if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K" || e.key === "f" || e.key === "F")) {
+        e.preventDefault()
+        setSearchOpen((v) => !v)
+        return
+      }
+
       // Skip if focus is in an editable element
       const target = e.target as HTMLElement
       if (
@@ -552,8 +588,9 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
       }
     }
 
-    window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
+    // Capture phase so Ctrl+F is intercepted before the WebView's find dialog opens.
+    window.addEventListener("keydown", handleKeyDown, true)
+    return () => window.removeEventListener("keydown", handleKeyDown, true)
   }, [refreshData, settings.experimentalCanvasBoards])
 
   const handleScanFolderWithSelection = useCallback(async () => {
@@ -853,6 +890,22 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
     const latest = projectsRef.current.find(p => p.id === project.id) || project
     setArtworkManagerProject(latest)
   }, [])
+
+  const handleEditCoverInLab = useCallback((project: Project, mode: "edit" | "fresh" = "edit") => {
+    const latest = projectsRef.current.find(p => p.id === project.id) || project
+    setCoverLabTarget({ projectId: latest.id, title: latest.title, coverPath: latest.artworkPath, mode })
+    // Close the artwork manager if it was open
+    setArtworkManagerProject(null)
+    setCurrentPage("cover-lab")
+  }, [])
+
+  const handleSetCoverFromLab = useCallback(async (path: string) => {
+    if (!coverLabTarget) return
+    await window.electron?.updateProject(coverLabTarget.projectId, { artworkPath: path })
+    await window.electron?.addArtworkHistoryEntry(coverLabTarget.projectId, path, "coverlab")
+    invalidateImageCache(path)
+    await refreshData()
+  }, [coverLabTarget, refreshData])
 
   const handleOpenGroupArtworkManager = useCallback((group: ProjectGroup) => {
     const latest = groupsRef.current.find(g => g.id === group.id) || group
@@ -1200,6 +1253,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
             pluginSessions={pluginSessions}
             onScanFolder={handleScanFolderWithSelection}
             onRateProject={handleRateProject}
+            onFilteredProjectsChange={setPlayerQueue}
           />
         )
       case "project-detail":
@@ -1294,6 +1348,17 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
         />
       case "shared":
         return <SharedWithMe />
+      case "stash-kit":
+        return <StashKit settings={settings} />
+      case "viz-lab":
+        return <VizLab playerState={playerState} />
+      case "cover-lab":
+        return (
+          <CoverLab
+            target={coverLabTarget}
+            onSetCover={coverLabTarget ? handleSetCoverFromLab : undefined}
+          />
+        )
       case "board":
         if (!settings.experimentalCanvasBoards) {
           setCurrentPage("dashboard")
@@ -1363,9 +1428,15 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
       <div className="flex-1 flex overflow-hidden min-h-0">
         <Navigation
           currentPage={currentPage}
-          onPageChange={setCurrentPage}
+          onPageChange={(page) => {
+            // Opening Cover Lab from the nav bar always starts a fresh standalone
+            // session (not bound to a previously-edited project's cover).
+            if (page === "cover-lab") setCoverLabTarget(null)
+            setCurrentPage(page)
+          }}
           onScanFolder={handleScanFolder}
           onScanFolderWithSelection={handleScanFolderWithSelection}
+          onOpenSearch={() => setSearchOpen(true)}
           scanProgress={scanProgress}
           experimentalCanvasBoards={settings.experimentalCanvasBoards}
         />
@@ -1380,7 +1451,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
           <AudioPlayer
             playerState={playerState}
             setPlayerState={setPlayerState}
-            projects={projects}
+            projects={playerQueue ?? projects}
             onOpenProject={handleOpenProject}
             onPlayProject={playProject}
             onRateProject={handleRateProject}
@@ -1393,6 +1464,7 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
           isOpen={!!artworkManagerProject}
           onClose={() => setArtworkManagerProject(null)}
           settings={settings}
+          onEditInCoverLab={handleEditCoverInLab}
           onChangeArtwork={handleChangeArtwork}
           onRemoveArtwork={handleRemoveArtwork}
           onGenerateArtwork={handleGenerateArtwork}
@@ -1449,6 +1521,16 @@ function AppContent({ settings, onSettingsChange }: { settings: AppSettings, onS
         onComplete={handleCompleteTour}
         currentPage={currentPage}
         onNavigate={setCurrentPage}
+      />
+      <CatalogSearch
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        projects={projects}
+        analyses={flpAnalyses}
+        sessions={pluginSessions}
+        onOpenProject={handleOpenProject}
+        onReloadAnalyses={reloadAnalyses}
+        accentColor={settings.accentColor}
       />
     </div>
   )

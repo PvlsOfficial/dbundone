@@ -11,6 +11,7 @@ import {
   X,
   Loader2,
   Music,
+  Wand2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -36,6 +37,7 @@ interface ArtworkManagerProps {
   onFetchUnsplashPhoto: (project: Project) => Promise<void>
   onRefresh: () => void
   withHistory?: boolean
+  onEditInCoverLab?: (project: Project, mode?: "edit" | "fresh") => void
 }
 
 const SOURCE_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
@@ -143,6 +145,7 @@ export const ArtworkManager: React.FC<ArtworkManagerProps> = ({
   onFetchUnsplashPhoto,
   onRefresh,
   withHistory = true,
+  onEditInCoverLab,
 }) => {
   const [history, setHistory] = useState<ArtworkHistoryEntry[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -317,6 +320,32 @@ export const ArtworkManager: React.FC<ArtworkManagerProps> = ({
                       <Shuffle className="w-4 h-4" />
                     )}
                     Random Photo
+                  </Button>
+                )}
+
+                {onEditInCoverLab && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2 justify-start text-primary border-primary/30 hover:bg-primary/10"
+                    onClick={() => onEditInCoverLab(project, project.artworkPath ? "edit" : "fresh")}
+                    disabled={actionLoading !== null}
+                  >
+                    <Wand2 className="w-4 h-4" />
+                    {project.artworkPath ? "Edit in Cover Lab" : "Cover Lab"}
+                  </Button>
+                )}
+
+                {onEditInCoverLab && project.artworkPath && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2 justify-start"
+                    onClick={() => onEditInCoverLab(project, "fresh")}
+                    disabled={actionLoading !== null}
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    New in Cover Lab
                   </Button>
                 )}
 

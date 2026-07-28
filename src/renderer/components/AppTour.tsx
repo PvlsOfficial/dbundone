@@ -22,7 +22,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useI18n } from "@/i18n"
 
-type Page = "dashboard" | "groups" | "group-detail" | "scheduler" | "settings" | "statistics" | "project-detail" | "help" | "shared" | "board"
+type Page = "dashboard" | "groups" | "group-detail" | "scheduler" | "settings" | "statistics" | "project-detail" | "help" | "shared" | "board" | "cover-lab" | "stash-kit" | "viz-lab"
 
 /**
  * action: "click-nav"     — user must click the highlighted nav element to proceed (page change detected)

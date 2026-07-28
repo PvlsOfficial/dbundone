@@ -23,6 +23,7 @@ import {
 } from "lucide-react"
 import { cn, assetUrl } from "@/lib/utils"
 import { computePeaksViaWebAudio } from "@/lib/audioPeaks"
+import { audioAnalyser } from "@/lib/audioAnalyser"
 import { useImageUrl } from "@/hooks/useImageUrl"
 import { Slider, Tooltip, TooltipContent, TooltipTrigger, TooltipProvider, Badge } from "@/components/ui"
 import { AudioPlayerState, Project } from "@shared/types"
@@ -44,6 +45,20 @@ const hasPlayableAudio = (p: Project): boolean => {
   return !!(p.audioPreviewPath || p.favoriteVersionId)
 }
 
+// Best-effort MIME type from a file extension, so a blob built from raw bytes is
+// recognised by the <audio> element across formats.
+function guessAudioMime(path: string): string {
+  switch (path.split(".").pop()?.toLowerCase()) {
+    case "mp3": return "audio/mpeg"
+    case "wav": return "audio/wav"
+    case "ogg": case "opus": return "audio/ogg"
+    case "flac": return "audio/flac"
+    case "m4a": case "mp4": case "aac": return "audio/mp4"
+    case "webm": return "audio/webm"
+    default: return ""
+  }
+}
+
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   playerState,
   setPlayerState,
@@ -54,6 +69,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 }) => {
   const artworkUrl = useImageUrl(playerState.currentTrack?.artworkPath)
   const audioRef = useRef<HTMLAudioElement | null>(null) // HTML5 Audio fallback
+  const blobUrlRef = useRef<string | null>(null) // object URL of the current track's audio blob
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const initialSeekTimeRef = useRef<number>(0) // Track initial seek position for restore
   const waveformRequestRef = useRef(0)
@@ -120,9 +136,14 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   useEffect(() => {
     return () => {
       if (audioRef.current) {
+        audioAnalyser.detach(audioRef.current)
         audioRef.current.pause()
         audioRef.current.src = ''
         audioRef.current = null
+      }
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current)
+        blobUrlRef.current = null
       }
     }
   }, [])
@@ -169,6 +190,9 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         })
 
         audioRef.current.addEventListener('play', () => {
+          // A user-gesture-driven play is the right moment to resume the audio
+          // context; while suspended the routed element would be silent.
+          audioAnalyser.resume()
           setPlayerState((prev) => ({ ...prev, isPlaying: true }))
         })
 
@@ -184,15 +208,31 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
       setIsReady(false)
       const loadAudio = async () => {
+        const path = playerState.currentTrack?.audioPreviewPath
+        if (!path || !audioRef.current) return
         try {
-          if (!playerState.currentTrack || !playerState.currentTrack.audioPreviewPath) return
-
-          // Use Tauri asset protocol URL directly — no IPC or blob needed
-          const audioAssetUrl = assetUrl(playerState.currentTrack.audioPreviewPath)
-          audioRef.current!.src = audioAssetUrl
-          audioRef.current!.load()
+          // Load the audio as a same-origin blob URL. The cross-origin Tauri asset
+          // protocol makes a Web Audio analyser (used by the Visualizer) emit only
+          // silence; a blob URL is same-origin so playback AND analysis both work.
+          const { readFile } = await import("@tauri-apps/plugin-fs")
+          const bytes = await readFile(path)
+          if (!audioRef.current) return
+          const url = URL.createObjectURL(new Blob([bytes], { type: guessAudioMime(path) }))
+          if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current)
+          blobUrlRef.current = url
+          audioRef.current.src = url
+          audioRef.current.load()
+          // Now that the source is same-origin, it's safe to route it through the
+          // shared analyser without muting playback.
+          audioAnalyser.attach(audioRef.current)
         } catch (error) {
-          console.error("AudioPlayer: Failed to load audio:", error)
+          // Fallback: stream via the asset protocol. Playback is preserved; the
+          // Visualizer just won't react for this track.
+          console.warn("AudioPlayer: blob load failed, falling back to asset protocol:", error)
+          if (audioRef.current) {
+            audioRef.current.src = assetUrl(path)
+            audioRef.current.load()
+          }
           setIsReady(false)
         }
       }

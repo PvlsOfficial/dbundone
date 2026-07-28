@@ -3,11 +3,12 @@ mod audio_analysis;
 mod commands;
 mod database;
 mod flp_parser;
+mod kit;
 mod scanner;
 mod tracktion_parser;
 mod websocket;
 
-use commands::{AppDataDir, DbState, PhotoCancelFlag, PluginServerHandle, SettingsState};
+use commands::{AnalyzeCancelFlag, AppDataDir, DbState, PhotoCancelFlag, PluginServerHandle, SettingsState};
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
@@ -95,6 +96,7 @@ pub fn run() {
             app.manage(SettingsState(Mutex::new(settings)));
             app.manage(AppDataDir(app_data_dir.clone()));
             app.manage(PhotoCancelFlag(AtomicBool::new(false)));
+            app.manage(AnalyzeCancelFlag(AtomicBool::new(false)));
 
             // Start the WebSocket server for VST3 plugin communication
             let plugin_state = websocket::PluginServerState::new();
@@ -458,6 +460,8 @@ pub fn run() {
             commands::get_audio_analysis,
             // FLP Analysis (extended)
             commands::analyze_flp_project,
+            commands::analyze_all_projects,
+            commands::cancel_analyze_all,
             commands::get_all_flp_analyses_cached,
             commands::clear_flp_analysis_cache,
             // ALS (Ableton) Analysis
@@ -494,6 +498,21 @@ pub fn run() {
             commands::download_shared_file,
             commands::get_shared_file_path,
             commands::reveal_in_folder,
+            // Cover Lab — generated cover images, doc persistence, stock search
+            commands::save_cover_image,
+            commands::list_cover_library,
+            commands::delete_cover_image,
+            commands::save_cover_doc,
+            commands::load_cover_doc,
+            commands::delete_cover_doc,
+            commands::stock_search,
+            commands::stock_fetch_data_url,
+            // Stash Kit
+            kit::stash_scan_sources,
+            kit::stash_build_kit,
+            kit::get_fl_icon_font,
+            kit::load_kit_config,
+            kit::save_kit_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

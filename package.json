@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Music Project Management Application",
   "scripts": {
-    "dev": "npx tauri dev",
+    "dev": "node scripts/dev.mjs",
     "dev:renderer": "vite",
     "build": "npx tauri build",
     "build:renderer": "vite build",
@@ -29,6 +29,7 @@
     "@types/react": "^18.2.45",
     "@types/react-dom": "^18.2.18",
     "@types/react-window": "^1.8.8",
+    "@types/three": "^0.184.1",
     "@types/uuid": "^9.0.7",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.16",
@@ -66,8 +67,11 @@
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
     "framer-motion": "^10.18.0",
+    "gifenc": "^1.0.3",
+    "gifuct-js": "^2.1.2",
     "lodash.debounce": "^4.0.8",
     "lucide-react": "^0.303.0",
+    "postprocessing": "^6.39.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-lazy-load-image-component": "^1.6.3",
@@ -75,6 +79,7 @@
     "react-window": "^2.2.6",
     "react-window-infinite-loader": "^2.0.1",
     "tailwind-merge": "^2.2.0",
+    "three": "^0.184.0",
     "uuid": "^9.0.1",
     "wavesurfer.js": "^7.12.1"
   }

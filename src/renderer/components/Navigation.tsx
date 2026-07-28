@@ -1,12 +1,12 @@
 import React from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Music, FolderOpen, Layers, Settings, Sparkles, FolderSync, BarChart3, HelpCircle, Share2, LayoutDashboard } from "lucide-react"
+import { Music, FolderOpen, Layers, Settings, Sparkles, FolderSync, BarChart3, HelpCircle, Share2, LayoutDashboard, Paintbrush, Boxes, Search, AudioWaveform } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui"
 import { Separator } from "@/components/ui"
 import { useI18n, type TranslationKey } from "@/i18n"
 
-type NavPage = "dashboard" | "groups" | "scheduler" | "settings" | "statistics" | "help" | "shared" | "board"
+type NavPage = "dashboard" | "groups" | "scheduler" | "settings" | "statistics" | "help" | "shared" | "board" | "cover-lab" | "stash-kit" | "viz-lab"
 type Page = NavPage | "project-detail" | "group-detail"
 
 interface NavigationProps {
@@ -14,6 +14,7 @@ interface NavigationProps {
   onPageChange: (page: NavPage) => void
   onScanFolder?: () => void
   onScanFolderWithSelection?: () => void
+  onOpenSearch?: () => void
   scanProgress?: {
     current: number;
     total: number;
@@ -56,6 +57,21 @@ const navItems: { id: NavPage; labelKey: TranslationKey; icon: React.ComponentTy
     labelKey: "nav.board",
     icon: LayoutDashboard,
   },
+  {
+    id: "cover-lab",
+    labelKey: "nav.coverLab",
+    icon: Paintbrush,
+  },
+  {
+    id: "stash-kit",
+    labelKey: "nav.stashKit",
+    icon: Boxes,
+  },
+  {
+    id: "viz-lab",
+    labelKey: "nav.vizLab",
+    icon: AudioWaveform,
+  },
 ]
 
 export const Navigation: React.FC<NavigationProps> = ({
@@ -63,6 +79,7 @@ export const Navigation: React.FC<NavigationProps> = ({
   onPageChange,
   onScanFolder,
   onScanFolderWithSelection,
+  onOpenSearch,
   scanProgress,
   experimentalCanvasBoards = false,
 }) => {
@@ -87,6 +104,27 @@ export const Navigation: React.FC<NavigationProps> = ({
     <nav className="w-[72px] h-full flex flex-col items-center py-4 bg-card border-r border-border/30 z-50 relative">
         {/* Main Navigation */}
         <div className="flex flex-col items-center gap-1 flex-1">
+          {/* Catalog DNA search */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={onOpenSearch}
+                aria-label="Search catalog"
+                className="w-11 h-11 rounded-xl flex items-center justify-center transition-all duration-200 text-muted-foreground hover:text-foreground hover:bg-muted/50 group"
+              >
+                <Search className="w-5 h-5 transition-colors group-hover:text-primary" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" className="font-medium">
+              <div className="flex items-center gap-2">
+                Search everything
+                <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">Ctrl K</kbd>
+              </div>
+            </TooltipContent>
+          </Tooltip>
+
+          <Separator className="my-1 w-8" />
+
           {visibleNavItems.map((item) => {
             const isActive = currentPage === item.id || (item.id === "groups" && currentPage === "group-detail")
             const Icon = item.icon

@@ -77,6 +77,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
   import { ProjectCanvas } from "@/components/ProjectCanvas"
   import type { CanvasMode } from "@/components/canvas/CanvasOverlay"
   import { CollaborationPanel } from "@/components/CollaborationPanel"
+  import { ProjectShareKit } from "@/components/ProjectShareKit"
   import { useAuth } from "@/contexts/AuthContext"
   import { syncVersionToShares } from "@/lib/sharingService"
   import { Project, ProjectStatus, AudioVersion, Annotation, AudioPlayerState, Tag, PluginSession, Task, DistributionLink, AppSettings } from "@shared/types"
@@ -1750,6 +1751,10 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                     <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-1">{distributionLinks.length}</Badge>
                   )}
                 </TabsTrigger>
+                <TabsTrigger value="sharekit" className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary gap-1.5 text-xs px-3">
+                  <Disc3 className="w-3.5 h-3.5" />
+                  Share Kit
+                </TabsTrigger>
                 {experimentalCanvasBoards && (
                   <TabsTrigger value="canvas" className="data-[state=active]:bg-primary/10 data-[state=active]:text-primary gap-1.5 text-xs px-3">
                     <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2519,6 +2524,18 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
                     </div>
                   )}
                 </div>
+              </ScrollArea>
+            </TabsContent>
+
+            {/* Share Kit Tab */}
+            <TabsContent value="sharekit" className="flex-1 overflow-hidden mt-0">
+              <ScrollArea className="h-full">
+                <ProjectShareKit
+                  project={displayProject}
+                  versions={versions}
+                  artworkUrl={artworkUrl}
+                  artworkPath={currentArtworkPath ?? null}
+                />
               </ScrollArea>
             </TabsContent>
 

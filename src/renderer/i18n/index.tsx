@@ -7,9 +7,10 @@ import ja from "./ja"
 import pt from "./pt"
 import ro from "./ro"
 
-// All translation keys derive from the English file
+// All translation keys derive from the English file. Non-English locales may be
+// partial — missing keys fall back to English.
 export type TranslationKey = keyof typeof en
-type Translations = Record<TranslationKey, string>
+type Translations = Partial<Record<TranslationKey, string>>
 
 const translationMap: Record<string, Translations> = { en, de, es, fr, ja, pt, ro }
 
@@ -20,7 +21,7 @@ interface I18nContextType {
 
 const I18nContext = createContext<I18nContextType>({
   t: (key, vars?) => {
-    let str = en[key] ?? key
+    let str: string = en[key] ?? key
     if (vars) {
       for (const [k, v] of Object.entries(vars)) {
         str = str.replace(`{${k}}`, String(v))
@@ -43,7 +44,7 @@ export const I18nProvider: React.FC<I18nProviderProps> = ({ children, language }
     const dict = translationMap[language] || translationMap.en
 
     const t = (key: TranslationKey, vars?: Record<string, string | number>): string => {
-      let str = dict[key] ?? translationMap.en[key] ?? key
+      let str: string = dict[key] ?? translationMap.en[key] ?? key
       if (vars) {
         for (const [k, v] of Object.entries(vars)) {
           str = str.replace(`{${k}}`, String(v))

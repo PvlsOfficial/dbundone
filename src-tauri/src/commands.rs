@@ -13,6 +13,7 @@ pub struct DbState(pub Mutex<Database>);
 pub struct SettingsState(pub Mutex<AppSettings>);
 pub struct AppDataDir(pub PathBuf);
 pub struct PhotoCancelFlag(pub AtomicBool);
+pub struct AnalyzeCancelFlag(pub AtomicBool);
 pub struct PluginServerHandle(pub std::sync::Arc<crate::websocket::PluginServerState>);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -945,6 +946,61 @@ pub fn get_app_version(app: AppHandle) -> String {
 
 // ============ SCAN COMMANDS ============
 
+/// Auto-import audio files (exports/renders) sitting in the same folder as a DAW
+/// project file as `export` versions, and mark the newest (by modified time) as
+/// the project's favorite. Shared by every DAW scanner so behaviour is uniform.
+fn auto_import_folder_audio(
+    database: &crate::database::Database,
+    project_id: &str,
+    project_file: &Path,
+) {
+    let parent_dir = match project_file.parent() {
+        Some(d) => d,
+        None => return,
+    };
+    let audio_exts = ["wav", "mp3", "flac", "ogg", "aiff", "aif", "m4a", "opus", "wma"];
+    let mut audio_files: Vec<(std::path::PathBuf, std::time::SystemTime)> = std::fs::read_dir(parent_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let p = e.path();
+            p.is_file() && p.extension()
+                .and_then(|x| x.to_str())
+                .map(|x| audio_exts.contains(&x.to_lowercase().as_str()))
+                .unwrap_or(false)
+        })
+        .filter_map(|e| {
+            let p = e.path();
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((p, mtime))
+        })
+        .collect();
+    audio_files.sort_by_key(|(_, mtime)| *mtime);
+    let mut last_version_id: Option<String> = None;
+    for (audio_path, _) in &audio_files {
+        let stem = audio_path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Export")
+            .to_string();
+        let version_data = serde_json::json!({
+            "projectId": project_id,
+            "name": stem,
+            "filePath": audio_path.to_string_lossy().to_string(),
+            "source": "export",
+        });
+        if let Ok(v) = database.create_version(&version_data) {
+            last_version_id = Some(v.id);
+        }
+    }
+    if let Some(fav_id) = last_version_id {
+        let _ = database.update_project(project_id, &serde_json::json!({
+            "favoriteVersionId": fav_id
+        }));
+    }
+}
+
 #[tauri::command]
 pub async fn scan_fl_folder(
     app: AppHandle,
@@ -1137,50 +1193,8 @@ pub async fn scan_fl_folder(
 
             if let Ok(created_project) = database.create_project(&project_data) {
                 added_count += 1;
-                // Auto-add audio exports from the same folder as versions
-                if let Some(parent_dir) = std::path::Path::new(&flp_path).parent() {
-                    let audio_exts = ["wav", "mp3", "flac", "ogg", "aiff", "aif", "m4a", "opus", "wma"];
-                    let mut audio_files: Vec<(std::path::PathBuf, std::time::SystemTime)> = std::fs::read_dir(parent_dir)
-                        .ok()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|e| e.ok())
-                        .filter(|e| {
-                            let p = e.path();
-                            p.is_file() && p.extension()
-                                .and_then(|x| x.to_str())
-                                .map(|x| audio_exts.contains(&x.to_lowercase().as_str()))
-                                .unwrap_or(false)
-                        })
-                        .filter_map(|e| {
-                            let p = e.path();
-                            let mtime = e.metadata().ok()?.modified().ok()?;
-                            Some((p, mtime))
-                        })
-                        .collect();
-                    audio_files.sort_by_key(|(_, mtime)| *mtime);
-                    let mut last_version_id: Option<String> = None;
-                    for (audio_path, _) in &audio_files {
-                        let stem = audio_path.file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("Export")
-                            .to_string();
-                        let version_data = serde_json::json!({
-                            "projectId": created_project.id,
-                            "name": stem,
-                            "filePath": audio_path.to_string_lossy().to_string(),
-                            "source": "export",
-                        });
-                        if let Ok(v) = database.create_version(&version_data) {
-                            last_version_id = Some(v.id);
-                        }
-                    }
-                    if let Some(fav_id) = last_version_id {
-                        let _ = database.update_project(&created_project.id, &serde_json::json!({
-                            "favoriteVersionId": fav_id
-                        }));
-                    }
-                }
+                // Auto-add audio exports from the same folder as versions + star newest
+                auto_import_folder_audio(&database, &created_project.id, std::path::Path::new(&flp_path));
             }
         }
     }
@@ -1482,7 +1496,10 @@ pub async fn scan_ableton_folder(
                 "updatedAt": file_modified.as_deref().unwrap_or(&chrono::Utc::now().to_rfc3339()),
             });
 
-            let _ = database.create_project(&project_data);
+            if let Ok(created_project) = database.create_project(&project_data) {
+                // Auto-add audio exports from the same folder as versions + star newest
+                auto_import_folder_audio(&database, &created_project.id, std::path::Path::new(&als_path));
+            }
             added_count += 1;
         }
     }
@@ -1606,7 +1623,10 @@ pub async fn scan_waveform_folder(
                 "updatedAt": file_modified.as_deref().unwrap_or(&chrono::Utc::now().to_rfc3339()),
             });
 
-            let _ = database.create_project(&project_data);
+            if let Ok(created_project) = database.create_project(&project_data) {
+                // Auto-add audio exports from the same folder as versions + star newest
+                auto_import_folder_audio(&database, &created_project.id, std::path::Path::new(&path));
+            }
             added_count += 1;
         }
     }
@@ -1750,7 +1770,10 @@ pub async fn scan_daw_folder(
                 "updatedAt": file_modified.as_deref().unwrap_or(&chrono::Utc::now().to_rfc3339()),
             });
 
-            let _ = database.create_project(&project_data);
+            if let Ok(created_project) = database.create_project(&project_data) {
+                // Auto-add audio exports from the same folder as versions + star newest
+                auto_import_folder_audio(&database, &created_project.id, std::path::Path::new(&file_path));
+            }
             added_count += 1;
         }
     }
@@ -2113,7 +2136,13 @@ pub async fn batch_fetch_photos(
 
     let total = projects_without_artwork.len();
     let mut success_count = 0usize;
-    let client = reqwest::Client::new();
+    // Per-request timeouts so a stalled/blocked picsum connection can't hang the
+    // whole batch forever (this was the "Add photos to all" timeout symptom).
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
 
     app.emit("photo-progress", serde_json::json!({
         "current": 0, "total": total, "added": 0,
@@ -2121,9 +2150,11 @@ pub async fn batch_fetch_photos(
         "isRunning": true, "cancelled": false
     })).ok();
 
-    // Download in parallel chunks of 8; retry up to 3 passes for any that fail.
+    // Download in parallel chunks; retry up to 3 passes for any that fail.
     // Each attempt uses a fresh timestamp seed so picsum serves a different image.
-    const CHUNK_SIZE: usize = 20;
+    // Keep concurrency modest — picsum.photos rate-limits bursts (429/503), which
+    // previously made large batches stall and appear to "time out".
+    const CHUNK_SIZE: usize = 6;
     const MAX_PASSES: usize = 3;
 
     // Tracks which project IDs still need a photo (starts as all of them).
@@ -2974,6 +3005,172 @@ pub fn analyze_als_project(file_path: String) -> Result<Value, String> {
     serde_json::to_value(&analysis).map_err(|e| e.to_string())
 }
 
+/// Parse a single project file into the shared analysis JSON, dispatching by
+/// extension. Returns None for unsupported / missing / unparseable files.
+fn analyze_project_file(path: &str) -> Option<String> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "flp" => {
+            let a = crate::flp_parser::analyze_flp(path).ok()?;
+            serde_json::to_string(&a).ok()
+        }
+        "zip" => {
+            let entry = scanner::extract_flps_from_zip(path).into_iter().next()?;
+            let label = format!("{}#{}", path, entry.flp_name);
+            let a = crate::flp_parser::analyze_flp_from_bytes(&entry.flp_data, &label).ok()?;
+            serde_json::to_string(&a).ok()
+        }
+        "als" => {
+            let a = crate::als_parser::analyze_als(path).ok()?;
+            serde_json::to_string(&a).ok()
+        }
+        "tracktionedit" => {
+            let a = crate::tracktion_parser::analyze_tracktion(path).ok()?;
+            serde_json::to_string(&a).ok()
+        }
+        _ => None,
+    }
+}
+
+/// Analyze every project's DAW file and cache the result, so catalog search can
+/// match by plugin / sample / channel across the *whole* library — not just the
+/// projects whose Analysis tab has been opened. Skips already-cached projects
+/// unless `force` is true. Emits "analyze-progress" and honors cancellation.
+#[tauri::command]
+pub async fn analyze_all_projects(
+    app: AppHandle,
+    db: State<'_, DbState>,
+    cancel_flag: State<'_, AnalyzeCancelFlag>,
+    force: Option<bool>,
+) -> Result<Value, String> {
+    cancel_flag.0.store(false, Ordering::SeqCst);
+    let force = force.unwrap_or(false);
+
+    // Snapshot the work list without holding the DB lock during parsing.
+    let (todo, skipped): (Vec<(String, String)>, usize) = {
+        let database = db.0.lock().map_err(|e| e.to_string())?;
+        let projects = database.get_projects()?;
+        let cached: std::collections::HashSet<String> = {
+            let conn = database.conn.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT project_id FROM flp_analysis_cache")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        let mut todo = Vec::new();
+        let mut skipped = 0usize;
+        for p in projects {
+            let path = match p.daw_project_path {
+                Some(s) if !s.trim().is_empty() => s,
+                _ => continue,
+            };
+            if !force && cached.contains(&p.id) {
+                skipped += 1;
+                continue;
+            }
+            todo.push((p.id, path));
+        }
+        (todo, skipped)
+    };
+
+    let total = todo.len();
+    app.emit("analyze-progress", serde_json::json!({
+        "current": 0, "total": total, "analyzed": 0,
+        "file": "Starting…", "isRunning": true, "cancelled": false
+    })).ok();
+
+    let mut analyzed = 0usize;
+    let mut failed = 0usize;
+    let mut done = 0usize;
+
+    // Parsing FLP/ALS files is CPU-bound, so fan out across cores via the blocking
+    // pool and only take the DB lock once per finished chunk to write the cache.
+    let parallel = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(2, 16);
+
+    for chunk in todo.chunks(parallel) {
+        if cancel_flag.0.load(Ordering::SeqCst) {
+            app.emit("analyze-progress", serde_json::json!({
+                "current": done, "total": total, "analyzed": analyzed,
+                "file": "Stopped", "isRunning": false, "cancelled": true
+            })).ok();
+            return Ok(serde_json::json!({
+                "success": true, "analyzed": analyzed, "failed": failed,
+                "total": total, "skipped": skipped, "cancelled": true
+            }));
+        }
+
+        // Parse this chunk's files in parallel (no DB access inside).
+        let tasks: Vec<_> = chunk
+            .iter()
+            .map(|(pid, path)| {
+                let pid = pid.clone();
+                let path = path.clone();
+                tokio::task::spawn_blocking(move || (pid, analyze_project_file(&path)))
+            })
+            .collect();
+        let parsed = join_all(tasks).await;
+
+        // Persist all successful results under a single lock acquisition.
+        {
+            let database = db.0.lock().map_err(|e| e.to_string())?;
+            for r in &parsed {
+                if let Ok((pid, Some(json_str))) = r {
+                    let _ = database.save_flp_analysis_cache(pid, json_str);
+                }
+            }
+        }
+
+        for r in &parsed {
+            done += 1;
+            match r {
+                Ok((_, Some(_))) => analyzed += 1,
+                _ => failed += 1,
+            }
+        }
+
+        let last = chunk
+            .last()
+            .map(|(_, p)| {
+                Path::new(p)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .unwrap_or_default();
+        app.emit("analyze-progress", serde_json::json!({
+            "current": done, "total": total, "analyzed": analyzed,
+            "file": last, "isRunning": true, "cancelled": false
+        })).ok();
+    }
+
+    app.emit("analyze-progress", serde_json::json!({
+        "current": total, "total": total, "analyzed": analyzed,
+        "file": "Complete", "isRunning": false, "cancelled": false
+    })).ok();
+
+    Ok(serde_json::json!({
+        "success": true, "analyzed": analyzed, "failed": failed,
+        "total": total, "skipped": skipped, "cancelled": false
+    }))
+}
+
+#[tauri::command]
+pub fn cancel_analyze_all(cancel_flag: State<'_, AnalyzeCancelFlag>) -> Result<bool, String> {
+    cancel_flag.0.store(true, Ordering::SeqCst);
+    Ok(true)
+}
+
 // ============ TRACKTION / WAVEFORM ANALYSIS ============
 
 /// Lightweight metadata (bpm, tracks, app version, ...) for a .tracktionedit file.
@@ -3344,6 +3541,304 @@ pub fn reveal_in_folder(file_path: String) -> Result<Value, String> {
         }
     }
 }
+
+// ============ Cover Lab — generated cover images ============
+
+/// Allowed file extensions for cover images written by the Cover Lab editor.
+fn sanitize_cover_ext(ext: &str) -> Result<&'static str, String> {
+    match ext.to_lowercase().as_str() {
+        "png" => Ok("png"),
+        "gif" => Ok("gif"),
+        "jpg" | "jpeg" => Ok("jpg"),
+        "webp" => Ok("webp"),
+        other => Err(format!("Unsupported cover image extension: {}", other)),
+    }
+}
+
+/// Persist raw image bytes (PNG/GIF/…) produced by the Cover Lab editor into the
+/// app's `covers` directory and return the absolute path. Mirrors the artwork-dir
+/// pattern used by `generate_artwork`.
+#[tauri::command]
+pub fn save_cover_image(app: AppHandle, bytes: Vec<u8>, ext: String) -> Result<String, String> {
+    let ext = sanitize_cover_ext(&ext)?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let covers_dir = app_data_dir.join("covers");
+    fs::create_dir_all(&covers_dir).map_err(|e| e.to_string())?;
+    let file_name = format!("cover_{}.{}", uuid::Uuid::new_v4(), ext);
+    let output_path = covers_dir.join(file_name);
+    fs::write(&output_path, &bytes).map_err(|e| e.to_string())?;
+    Ok(output_path.to_string_lossy().to_string())
+}
+
+/// List the absolute paths of every saved cover image, newest first.
+#[tauri::command]
+pub fn list_cover_library(app: AppHandle) -> Result<Vec<String>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let covers_dir = app_data_dir.join("covers");
+    if !covers_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut entries: Vec<(std::time::SystemTime, String)> = Vec::new();
+    for entry in fs::read_dir(&covers_dir).map_err(|e| e.to_string())?.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let is_image = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| sanitize_cover_ext(e).is_ok())
+            .unwrap_or(false);
+        if !is_image {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        entries.push((modified, path.to_string_lossy().to_string()));
+    }
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(entries.into_iter().map(|(_, p)| p).collect())
+}
+
+/// Delete a cover image. Only paths inside the app's `covers` directory are allowed.
+#[tauri::command]
+pub fn delete_cover_image(app: AppHandle, path: String) -> Result<bool, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let covers_dir = app_data_dir.join("covers");
+    let target = PathBuf::from(&path);
+    let canonical_target = target.canonicalize().map_err(|e| e.to_string())?;
+    let canonical_dir = covers_dir.canonicalize().map_err(|e| e.to_string())?;
+    if !canonical_target.starts_with(&canonical_dir) {
+        return Err("Refusing to delete a path outside the covers directory".to_string());
+    }
+    fs::remove_file(&canonical_target).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+// ============ Cover Lab — editable documents (per project) ============
+
+/// Reduce a project id to a safe file-name component (alnum, '-', '_' only) so it
+/// can't escape the docs directory.
+fn sanitize_doc_id(id: &str) -> String {
+    let cleaned: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    if cleaned.is_empty() { "doc".to_string() } else { cleaned }
+}
+
+fn cover_docs_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = app_data_dir.join("cover_docs");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Persist the editable Cover Lab document (JSON) behind a project's cover so the
+/// cover can be reopened later with all its layers, effects and animation intact.
+/// Stored on disk (no size cap), keyed by project id.
+#[tauri::command]
+pub fn save_cover_doc(app: AppHandle, project_id: String, json: String) -> Result<(), String> {
+    let dir = cover_docs_dir(&app)?;
+    let path = dir.join(format!("{}.json", sanitize_doc_id(&project_id)));
+    fs::write(&path, json.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Load a previously-saved editable Cover Lab document for a project, if any.
+#[tauri::command]
+pub fn load_cover_doc(app: AppHandle, project_id: String) -> Result<Option<String>, String> {
+    let dir = cover_docs_dir(&app)?;
+    let path = dir.join(format!("{}.json", sanitize_doc_id(&project_id)));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let json = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    Ok(Some(json))
+}
+
+/// Forget the editable Cover Lab document for a project.
+#[tauri::command]
+pub fn delete_cover_doc(app: AppHandle, project_id: String) -> Result<(), String> {
+    let dir = cover_docs_dir(&app)?;
+    let path = dir.join(format!("{}.json", sanitize_doc_id(&project_id)));
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ============ Keyless stock media (Cover Lab) ============
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockResult {
+    id: String,
+    title: String,
+    /// Small preview URL (loaded directly by the webview).
+    thumbnail: String,
+    /// Full-resolution URL (downloaded via stock_fetch_data_url when chosen).
+    url: String,
+    source: String,
+}
+
+/// Search keyless stock-media providers. No API keys required.
+/// provider: "wikimedia" (search photos/gifs), "flickr" (keyword photos via
+/// LoremFlickr), "picsum" (random photos). kind: "photo" | "gif".
+#[tauri::command]
+pub async fn stock_search(
+    query: String,
+    kind: String,
+    provider: String,
+    page: u32,
+) -> Result<Vec<StockResult>, String> {
+    let page = page.max(1);
+    match provider.as_str() {
+        "flickr" => Ok(loremflickr_results(&query, page)),
+        "picsum" => Ok(picsum_results(page)),
+        _ => wikimedia_search(&query, &kind, page).await,
+    }
+}
+
+/// Percent-encode a path segment (keeps alphanumerics and a few safe chars).
+fn encode_path_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b',' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// LoremFlickr: keyword-matched Flickr Creative-Commons photos, keyless.
+fn loremflickr_results(query: &str, page: u32) -> Vec<StockResult> {
+    let kw: String = query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(",");
+    let path = if kw.is_empty() { String::new() } else { format!("/{}", encode_path_segment(&kw)) };
+    (0..24)
+        .map(|i| {
+            let lock = page * 100 + i;
+            StockResult {
+                id: format!("flickr-{}", lock),
+                title: if kw.is_empty() { "Random".into() } else { query.to_string() },
+                thumbnail: format!("https://loremflickr.com/320/320{}?lock={}", path, lock),
+                url: format!("https://loremflickr.com/1200/1200{}?lock={}", path, lock),
+                source: "Flickr (CC)".into(),
+            }
+        })
+        .collect()
+}
+
+/// Lorem Picsum: seeded random photos (seed keeps thumbnail == full image).
+fn picsum_results(page: u32) -> Vec<StockResult> {
+    (0..24)
+        .map(|i| {
+            let seed = format!("db{}-{}", page, i);
+            StockResult {
+                id: format!("picsum-{}", seed),
+                title: "Random photo".into(),
+                thumbnail: format!("https://picsum.photos/seed/{}/320/320", seed),
+                url: format!("https://picsum.photos/seed/{}/1200/1200", seed),
+                source: "Lorem Picsum".into(),
+            }
+        })
+        .collect()
+}
+
+/// Wikimedia Commons search — fully keyless (just needs a descriptive UA).
+async fn wikimedia_search(query: &str, kind: &str, page: u32) -> Result<Vec<StockResult>, String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Ok(vec![]);
+    }
+    // CirrusSearch has no `filetype:gif`; GIFs are classed as `bitmap`. To get only
+    // GIFs we match the MIME type directly via `filemime:`.
+    let filetype = if kind == "gif" { "filemime:image/gif" } else { "filetype:bitmap" };
+    let search = format!("{} {}", q, filetype);
+    let offset = ((page.saturating_sub(1)) * 30).to_string();
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://commons.wikimedia.org/w/api.php")
+        .query(&[
+            ("action", "query"),
+            ("format", "json"),
+            ("generator", "search"),
+            ("gsrsearch", search.as_str()),
+            ("gsrnamespace", "6"),
+            ("gsrlimit", "30"),
+            ("gsroffset", offset.as_str()),
+            ("prop", "imageinfo"),
+            ("iiprop", "url|mime"),
+            ("iiurlwidth", "320"),
+        ])
+        .header("User-Agent", "DBundone/1.0 (music cover art tool)")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Wikimedia search failed: {}", resp.status()));
+    }
+    let data: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let mut results: Vec<(i64, StockResult)> = Vec::new();
+    if let Some(pages) = data["query"]["pages"].as_object() {
+        for page in pages.values() {
+            let index = page["index"].as_i64().unwrap_or(9999);
+            let title = page["title"].as_str().unwrap_or("").to_string();
+            let ii = &page["imageinfo"][0];
+            let url = ii["url"].as_str().unwrap_or("").to_string();
+            let thumb = ii["thumburl"].as_str().unwrap_or("").to_string();
+            let mime = ii["mime"].as_str().unwrap_or("");
+            if url.is_empty() || thumb.is_empty() {
+                continue;
+            }
+            if kind == "gif" {
+                if mime != "image/gif" {
+                    continue;
+                }
+            } else if matches!(mime, "image/gif" | "image/svg+xml" | "image/tiff") {
+                continue;
+            }
+            let id = page["pageid"].as_i64().map(|n| n.to_string()).unwrap_or_else(|| title.clone());
+            let clean = title.strip_prefix("File:").unwrap_or(&title).to_string();
+            results.push((
+                index,
+                StockResult { id, title: clean, thumbnail: thumb, url, source: "Wikimedia Commons".into() },
+            ));
+        }
+    }
+    results.sort_by_key(|(i, _)| *i);
+    Ok(results.into_iter().map(|(_, r)| r).collect())
+}
+
+/// Download a remote image and return it as an (untainted) data: URL so it can be
+/// used as a Cover Lab layer and exported safely. Animated GIFs are preserved.
+#[tauri::command]
+pub async fn stock_fetch_data_url(url: String) -> Result<String, String> {
+    let data = download_image(&url).await?;
+    if data.len() < 64 {
+        return Err("Downloaded image was empty".to_string());
+    }
+    let mime = if data.starts_with(b"GIF8") {
+        "image/gif"
+    } else if data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        "image/png"
+    } else if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    };
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+    Ok(format!("data:{};base64,{}", mime, b64))
+}
+
 
 #[cfg(test)]
 mod tests {

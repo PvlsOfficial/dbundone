@@ -1,4 +1,4 @@
-import { Project, ProjectGroup, Task, Tag, AppSettings, AudioVersion, Annotation, ArtworkHistoryEntry, PluginSession, PluginEvent, FlpAnalysis, UserProfile, ProjectShare, OnboardingState, DistributionLink } from '@shared/types';
+import { Project, ProjectGroup, Task, Tag, AppSettings, AudioVersion, Annotation, ArtworkHistoryEntry, PluginSession, PluginEvent, FlpAnalysis, UserProfile, ProjectShare, OnboardingState, DistributionLink, SampleCandidate, KitBuildItem, KitFolderStyle, KitBuildOptions, KitBuildResult, FlIconFont } from '@shared/types';
 
 declare global {
   interface Window {
@@ -98,6 +98,17 @@ declare global {
       deleteArtworkHistoryEntry: (id: string) => Promise<boolean>;
       setArtworkFromHistory: (projectId: string, filePath: string) => Promise<Project>;
 
+      // Cover Lab — generated cover images
+      readImageBase64: (filePath: string) => Promise<string>;
+      saveCoverImage: (bytes: number[], ext: string) => Promise<string>;
+      listCoverLibrary: () => Promise<string[]>;
+      deleteCoverImage: (path: string) => Promise<boolean>;
+      saveCoverDoc: (projectId: string, json: string) => Promise<void>;
+      loadCoverDoc: (projectId: string) => Promise<string | null>;
+      deleteCoverDoc: (projectId: string) => Promise<void>;
+      stockSearch: (query: string, kind: "photo" | "gif", provider: string, page: number) => Promise<{ id: string; title: string; thumbnail: string; url: string; source: string }[]>;
+      stockFetchDataUrl: (url: string) => Promise<string>;
+
       // FLP metadata extraction (single file)
       extractFlpMetadata: (filePath: string) => Promise<any>;
       
@@ -133,11 +144,23 @@ declare global {
 
       // FLP Analysis
       analyzeFlpProject: (projectId: string, flpPath: string) => Promise<FlpAnalysis>;
+      analyzeAllProjects: (force?: boolean) => Promise<{ success: boolean; analyzed: number; failed: number; total: number; skipped: number; cancelled: boolean }>;
+      cancelAnalyzeAll: () => Promise<boolean>;
+      onAnalyzeProgress: (callback: (payload: any) => void) => Promise<() => void>;
+      getAllFlpAnalysesCached: () => Promise<Record<string, FlpAnalysis>>;
       clearFlpAnalysisCache: (projectId: string) => Promise<void>;
       // Tracktion / Waveform Analysis (returns FlpAnalysis-shaped data)
       analyzeTracktionProject: (projectId: string, filePath: string) => Promise<FlpAnalysis>;
       extractTracktionMetadata: (filePath: string) => Promise<Record<string, unknown>>;
       captureWindowScreenshot: (windowTitle: string) => Promise<string>;
+
+      // Stash Kit Creator
+      stashScanSources: (paths: string[], extraKeywords?: Record<string, string[]>) => Promise<SampleCandidate[]>;
+      stashBuildKit: (outputDir: string, items: KitBuildItem[], folders: KitFolderStyle[], options: KitBuildOptions) => Promise<KitBuildResult>;
+      getFlIconFont: (overridePath?: string) => Promise<FlIconFont>;
+      loadKitConfig: () => Promise<string | null>;
+      saveKitConfig: (json: string) => Promise<void>;
+      selectFlpOrZipFiles: () => Promise<string[]>;
 
       // User Profile
       getUserProfile: () => Promise<UserProfile | null>;
