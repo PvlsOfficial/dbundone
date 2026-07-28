@@ -1,0 +1,21 @@
+stages:
+  - build
+
+build:macos:
+  stage: build
+  tags:
+    - Mac
+  cache:
+    key: macos-build
+    paths:
+      - node_modules/
+      - src-tauri/target/
+  script:
+    - npm ci
+    - npm run build
+  artifacts:
+    paths:
+      - src-tauri/target/release/bundle/
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
