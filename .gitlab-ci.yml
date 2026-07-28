@@ -11,11 +11,11 @@ build:macos:
     RUSTUP_HOME: "$CI_PROJECT_DIR/.rustup"
   before_script:
     - |
-      case "$(uname -m)" in
-        x86_64) NODE_ARCH=x64 ;;
-        arm64)  NODE_ARCH=arm64 ;;
-        *) echo "Unbekannte Architektur: $(uname -m)"; exit 1 ;;
-      esac
+      if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+        NODE_ARCH=arm64
+      else
+        NODE_ARCH=x64
+      fi
     - |
       echo "Installiere Node.js $NODE_VERSION ($NODE_ARCH)..."
       mkdir -p .node
