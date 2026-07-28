@@ -6,17 +6,9 @@ build:macos:
   tags:
     - Mac
   variables:
-    NODE_VERSION: "20.18.1"
+    NODE_VERSION: "20.19.0"
     CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
     RUSTUP_HOME: "$CI_PROJECT_DIR/.rustup"
-  cache:
-    key: macos-toolchains
-    paths:
-      - .cargo/
-      - .rustup/
-      - .node/
-      - node_modules/
-      - src-tauri/target/
   before_script:
     - |
       case "$(uname -m)" in
@@ -25,17 +17,13 @@ build:macos:
         *) echo "Unbekannte Architektur: $(uname -m)"; exit 1 ;;
       esac
     - |
-      if [ ! -x "$CI_PROJECT_DIR/.node/bin/node" ]; then
-        echo "Installiere Node.js $NODE_VERSION ($NODE_ARCH)..."
-        mkdir -p .node
-        curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-${NODE_ARCH}.tar.gz" | tar -xz --strip-components=1 -C .node
-      fi
+      echo "Installiere Node.js $NODE_VERSION ($NODE_ARCH)..."
+      mkdir -p .node
+      curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-${NODE_ARCH}.tar.gz" | tar -xz --strip-components=1 -C .node
     - export PATH="$CI_PROJECT_DIR/.node/bin:$PATH"
     - |
-      if [ ! -x "$CARGO_HOME/bin/cargo" ]; then
-        echo "Installiere Rust..."
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --no-modify-path
-      fi
+      echo "Installiere Rust..."
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --no-modify-path
     - export PATH="$CARGO_HOME/bin:$PATH"
     - node -v
     - cargo -V
@@ -53,5 +41,7 @@ build:macos:
     paths:
       - src-tauri/target/release/bundle/
     expire_in: 1 week
+  after_script:
+    - rm -rf "$CI_PROJECT_DIR/.node" "$CI_PROJECT_DIR/.cargo" "$CI_PROJECT_DIR/.rustup" "$CI_PROJECT_DIR/node_modules" "$CI_PROJECT_DIR/src-tauri/target"
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
